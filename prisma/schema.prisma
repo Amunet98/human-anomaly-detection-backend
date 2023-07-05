@@ -1,0 +1,59 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model category {
+  name  String? @unique @db.VarChar
+  slug  String? @unique @db.VarChar
+  id    Int     @id(map: "category_pk") @default(autoincrement())
+  items items[]
+}
+
+model classes {
+  class             String?             @unique(map: "classes_un")
+  created_at        DateTime            @default(dbgenerated("'2023-06-09'::date")) @db.Date
+  id                Int                 @id(map: "classes_pk") @default(autoincrement())
+  item_class_assign item_class_assign[]
+}
+
+model item_class_assign {
+  id        Int     @id
+  name      String? @unique
+  is_active Boolean @default(true)
+  slug      String? @unique
+  item_id   Int
+  class_id  Int
+  items     items   @relation(fields: [item_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "item_class_assign_fk")
+  classes   classes @relation(fields: [class_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "item_class_assign_fk_classes")
+}
+
+model items {
+  name              String?             @unique
+  is_active         Boolean             @default(true)
+  slug              String?             @unique
+  category_id       Int
+  thumbnail         String?
+  created_at        DateTime            @default(dbgenerated("'2023-06-09'::date")) @db.Date
+  description       String?
+  id                Int                 @id(map: "items_pk") @default(autoincrement())
+  item_class_assign item_class_assign[]
+  category          category            @relation(fields: [category_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "items_fk")
+}
+
+model raw_data {
+  id                   Int      @id
+  item_class_assign_id Int
+  category_id          Int?
+  item_id              Int?
+  class_id             Int?
+  time                 DateTime @default(dbgenerated("'2023-06-09'::date")) @db.Date
+  gps_coordinates_lat  Float?   @db.Real
+  gps_coordinates_lng  Float?   @db.Real
+  image_frame          String?
+  name                 String   @db.VarChar
+}
