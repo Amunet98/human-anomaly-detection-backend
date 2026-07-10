@@ -1,55 +1,105 @@
+require('dotenv').config();
 const express = require('express');
 const app = express();
+app.use(express.json({ limit: '15mb' }));
 const server = require('http').Server(app);
+
 const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
-/// making new prismaclient  object.
-const prisma = new PrismaClient()
+const { analyzeBase64, analyzeUrl } = require('./inference');
 
-///configuring socket 
+/// configuring socket
 const io = require('socket.io')(server, {
 	cors: {
 		origin: "*"
 	},
-	transports: ["websocket", "polling"] 
+	transports: ["websocket", "polling"]
 });
 
+// Persists a detection so /detected has real history, and broadcasts it to
+// connected clients as the simple label string LiveStream/Home.js expect.
+async function recordDetection(label, frameBase64) {
+	io.emit('detected', label);
+	try {
+		await prisma.raw_data.create({
+			data: { name: label, image_frame: frameBase64 },
+		});
+	} catch (error) {
+		console.log('Failed to persist detection:', error.message);
+	}
+}
 
-//socket server listening  
+// Running full YOLO inference on every incoming frame (~25fps from the
+// opencv service) would peg the CPU, so we only sample a frame at most
+// every INFERENCE_INTERVAL_MS and skip while a run is still in flight.
+const INFERENCE_INTERVAL_MS = 500;
+let lastInferenceAt = 0;
+let inferenceInFlight = false;
+
+function maybeRunInference(frameBase64) {
+	const now = Date.now();
+	if (inferenceInFlight || now - lastInferenceAt < INFERENCE_INTERVAL_MS) return;
+	lastInferenceAt = now;
+	inferenceInFlight = true;
+
+	analyzeBase64(frameBase64)
+		.then((result) => {
+			if (result.top) {
+				console.log(`Detected: ${result.top.className} (${result.top.confidence})`);
+				return recordDetection(result.top.className, frameBase64);
+			}
+		})
+		.catch((error) => console.log('Inference failed:', error.message))
+		.finally(() => {
+			inferenceInFlight = false;
+		});
+}
+
+// socket server listening
 io.on('connection', client => {
 	console.log('connection established')
-	client.on('data', data => {  
-		var frame =  Buffer.from(data, 'base64').toString()
-		io.emit('frame',frame)
-		});
-	client.on('detected',(data)=>{
-		// dataBuffer = Buffer.from(data,'ascii').toString()
-		// var splitted = dataBuffer.split('_')
-		console.log(data)
-		io.emit('detected',data)
-	})
+	client.on('data', data => {
+		io.emit('frame', data);
+		maybeRunInference(data);
+	});
 	client.on('disconnect', () => {
 		console.log('client disconnected');
 	});
-  });
-  
-
+});
 
 // Creating get request simple route
 app.get('/', (req, res) => {
 	res.send('Detection system')
 });
 
-//get Category route+controller
-app.get('/category', async (req, res) => {
-	const output = await prisma.category.findMany();
-	res.send(output);
-	res.status(200);
+// Runs the same ONNX model used for the live stream against a single
+// uploaded/linked image - what the frontend's upload and URL-check
+// features call instead of a third-party API.
+app.post('/analyze', async (req, res) => {
+	try {
+		const { image, imageUrl } = req.body;
+		if (!image && !imageUrl) {
+			return res.status(400).send('Pass either "image" (base64) or "imageUrl" in the request body.');
+		}
+		const result = image ? await analyzeBase64(image) : await analyzeUrl(imageUrl);
+		res.status(200).send(result);
+	} catch (error) {
+		console.log(error);
+		res.status(500).send('internal Server error');
+	}
 });
 
+app.get('/category', async (req, res) => {
+	try {
+		const output = await prisma.category.findMany();
+		res.status(200).send(output);
+	} catch (error) {
+		console.log(error);
+		res.status(500).send('internal Server error');
+	}
+});
 
-//get items route+controller
-//pass category id 
 app.get('/item/:id', async (req, res) => {
 	try {
 		const categoryId = req.params.id
@@ -68,13 +118,9 @@ app.get('/item/:id', async (req, res) => {
 		console.log(error);
 		res.status(500);
 		res.send('internal Server error')
-
 	}
 });
 
-
-//get items route+controller
-//pass item id
 app.get('/item/classes/:id', async (req, res) => {
 	try {
 		const itemId = req.params.id
@@ -96,7 +142,6 @@ app.get('/item/classes/:id', async (req, res) => {
 	}
 });
 
-
 app.get('/detected', async (req, res) => {
 	try {
 		const output = await prisma.raw_data.findMany({
@@ -113,58 +158,9 @@ app.get('/detected', async (req, res) => {
 	}
 });
 
-
-// app.get('/', async (req, res) => {
-// 	try {
-// 		const itemId = req.params.id
-// 		if (itemId == null || undefined) {
-// 			res.status(500);
-// 			res.send('please pass item id in request params !');
-// 		}
-// 		const output = await prisma.item_class_assign.findMany({
-// 			where: {
-// 				item_id: parseInt(itemId)
-// 			}
-
-// 		});
-// 		res.send(output);
-// 		res.status(200);
-// 	} catch (error) {
-// 		console.log(error);
-// 		res.status(500);
-// 		res.send('internal Server error')
-// 	}
-// });
-
-
-
-
-
-// app.get('/check', (req, res) => {
-// 	axios({
-// 		method: "POST",
-// 		url: "https://classify.roboflow.com/numbers-e7tsb/2",
-// 		params: {
-// 			api_key: "o638K18mmUlsYpQHLmn7"
-// 		},
-// 		data: image,
-// 		headers: {
-// 			"Content-Type": "application/x-www-form-urlencoded"
-// 		}
-// 	})
-// 		.then(function (response) {
-// 			console.log(response.data);
-// 			res.send(response.data);
-// 			res.statusCode(200);
-// 		})
-// 		.catch(function (error) {
-// 			console.log(error.message);
-// 			res.errored(error.message);
-// 			res.statusCode(500);
-// 		});
-// 	res.sendFile(path.join(__dirname, 'index.html'));
-// });
-
-// Using setInterval to read the image every one second.
-
-server.listen(5000);
+// Port comes from the hosting platform in production (Railway/Render set process.env.PORT),
+// falls back to 81 for local dev to match the frontend's existing localhost:81 socket URL.
+const PORT = process.env.PORT || 81;
+server.listen(PORT, () => {
+  console.log(`🚀 Main Socket Backend active on port ${PORT}`);
+});

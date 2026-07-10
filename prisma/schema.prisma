@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
 }
 
 datasource db {
@@ -16,13 +17,13 @@ model category {
 
 model classes {
   class             String?             @unique(map: "classes_un")
-  created_at        DateTime            @default(dbgenerated("'2023-06-09'::date")) @db.Date
+  created_at        DateTime            @default(now()) @db.Date
   id                Int                 @id(map: "classes_pk") @default(autoincrement())
   item_class_assign item_class_assign[]
 }
 
 model item_class_assign {
-  id        Int     @id
+  id        Int     @id @default(autoincrement())
   name      String? @unique
   is_active Boolean @default(true)
   slug      String? @unique
@@ -38,7 +39,7 @@ model items {
   slug              String?             @unique
   category_id       Int
   thumbnail         String?
-  created_at        DateTime            @default(dbgenerated("'2023-06-09'::date")) @db.Date
+  created_at        DateTime            @default(now()) @db.Date
   description       String?
   id                Int                 @id(map: "items_pk") @default(autoincrement())
   item_class_assign item_class_assign[]
@@ -46,12 +47,12 @@ model items {
 }
 
 model raw_data {
-  id                   Int      @id
-  item_class_assign_id Int
+  id                   Int      @id @default(autoincrement())
+  item_class_assign_id Int?
   category_id          Int?
   item_id              Int?
   class_id             Int?
-  time                 DateTime @default(dbgenerated("'2023-06-09'::date")) @db.Date
+  time                 DateTime @default(now()) @db.Timestamptz(6)
   gps_coordinates_lat  Float?   @db.Real
   gps_coordinates_lng  Float?   @db.Real
   image_frame          String?
