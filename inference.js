@@ -20,7 +20,19 @@ const IOU_THRESHOLD = 0.45;
 
 let sessionPromise = null;
 function getSession() {
-	if (!sessionPromise) sessionPromise = ort.InferenceSession.create(MODEL_PATH);
+	if (!sessionPromise) {
+		// onnxruntime-node defaults to spawning a thread per visible CPU core.
+		// On a heavily CPU-throttled container (e.g. a free hosting tier) that
+		// thrashes badly - way more threads than actual CPU time available,
+		// so runs take tens of seconds instead of under one. Single-threaded
+		// is faster in practice on constrained hosts; override via env if a
+		// given host actually has real cores to spare.
+		const threads = parseInt(process.env.ONNX_NUM_THREADS, 10) || 1;
+		sessionPromise = ort.InferenceSession.create(MODEL_PATH, {
+			intraOpNumThreads: threads,
+			interOpNumThreads: threads,
+		});
+	}
 	return sessionPromise;
 }
 
