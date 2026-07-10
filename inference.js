@@ -3,6 +3,13 @@ const ort = require('onnxruntime-node');
 const sharp = require('sharp');
 const axios = require('axios');
 
+// Sharp's libvips backend keeps a decode cache and a worker pool by default,
+// both of which cost real memory that a 512MB-RAM host doesn't have to
+// spare alongside a loaded ONNX model. Trade a bit of throughput for a
+// smaller footprint.
+sharp.cache(false);
+sharp.concurrency(1);
+
 const MODEL_PATH = path.join(__dirname, 'best.onnx');
 const INPUT_SIZE = 640;
 const NUM_ANCHORS = 8400;
@@ -31,6 +38,12 @@ function getSession() {
 		sessionPromise = ort.InferenceSession.create(MODEL_PATH, {
 			intraOpNumThreads: threads,
 			interOpNumThreads: threads,
+			// Both trade a bit of speed for a smaller memory footprint - the
+			// arena/pattern allocators pre-reserve memory for reuse, which is
+			// the wrong tradeoff on a RAM-constrained host.
+			enableCpuMemArena: false,
+			enableMemPattern: false,
+			graphOptimizationLevel: 'basic',
 		});
 	}
 	return sessionPromise;
