@@ -96,6 +96,14 @@ app.post('/analyze', async (req, res) => {
 				.status(502)
 				.send(`Could not fetch that image URL (host responded ${error.response.status}). Try a different URL or upload the image instead.`);
 		}
+		// Sharp throws this when the fetched URL returned something that
+		// isn't actually image data - e.g. a webpage/search-results link
+		// instead of a direct link to a .jpg/.png file.
+		if (error.message?.includes('unsupported image format')) {
+			return res
+				.status(400)
+				.send('That URL doesn\'t point directly to an image file. Right-click the image itself and copy its address (should end in .jpg/.png/etc), not a link to the page it\'s on.');
+		}
 		res.status(500).send('internal Server error');
 	}
 });
