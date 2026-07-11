@@ -1,0 +1,23 @@
+# Render's free tier spins the service down after ~15 idle minutes, so a
+# visitor hitting the live demo cold would stare at a dead feed for 30-60s.
+# A ping every 10 minutes keeps it warm. Costs nothing (public repo Actions
+# minutes are free); GitHub pauses schedules after 60 days without repo
+# activity - any push re-enables it.
+name: keep-warm
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend
+        run: |
+          curl -sf --max-time 80 -o /dev/null -w "backend: %{http_code} in %{time_total}s\n" \
+            https://human-anomaly-detection-backend.onrender.com/ || echo "backend ping failed (may be waking)"
+      - name: Ping OpenCV capture service
+        run: |
+          curl -sf --max-time 80 -o /dev/null -w "server-opencv: %{http_code} in %{time_total}s\n" \
+            https://server-opencv.onrender.com/ || echo "opencv ping failed (may be waking)"
