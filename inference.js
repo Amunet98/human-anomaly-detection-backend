@@ -166,7 +166,12 @@ async function analyzeBase64(base64Image) {
 }
 
 async function analyzeUrl(imageUrl) {
-	const response = await axios.get(imageUrl, { responseType: 'arraybuffer' });
+	// Many image hosts (Wikimedia, Roboflow, etc.) reject requests with no
+	// User-Agent as bot traffic (403), even for a plain public image fetch.
+	const response = await axios.get(imageUrl, {
+		responseType: 'arraybuffer',
+		headers: { 'User-Agent': 'Mozilla/5.0 (compatible; human-anomaly-detection-bot/1.0)' },
+	});
 	return analyzeBuffer(Buffer.from(response.data));
 }
 

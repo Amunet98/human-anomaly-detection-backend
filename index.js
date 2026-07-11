@@ -88,6 +88,14 @@ app.post('/analyze', async (req, res) => {
 		res.status(200).send(result);
 	} catch (error) {
 		console.log(error);
+		// axios errors carry the failed HTTP response - surface that (e.g. a
+		// host blocking the fetch with 403/400) instead of a generic 500 that
+		// looks like our own server broke.
+		if (error.response) {
+			return res
+				.status(502)
+				.send(`Could not fetch that image URL (host responded ${error.response.status}). Try a different URL or upload the image instead.`);
+		}
 		res.status(500).send('internal Server error');
 	}
 });
