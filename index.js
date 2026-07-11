@@ -58,6 +58,32 @@ function maybeRunInference(frameBase64) {
 		});
 }
 
+// Runs inference on one visitor's own camera frames (see LiveStream.js) and
+// reports the result back to just that connection via 'own-detected' - never
+// rebroadcast to other visitors, and not persisted to raw_data (unlike the
+// shared demo camera/sample video above, these are a stranger's own webcam
+// frames). Throttled per-connection so concurrent visitors don't starve each
+// other the way a single shared lastInferenceAt/inferenceInFlight would.
+function makeOwnCameraInference(client) {
+	let lastInferenceAt = 0;
+	let inferenceInFlight = false;
+	return function (frameBase64) {
+		const now = Date.now();
+		if (inferenceInFlight || now - lastInferenceAt < INFERENCE_INTERVAL_MS) return;
+		lastInferenceAt = now;
+		inferenceInFlight = true;
+
+		analyzeBase64(frameBase64)
+			.then((result) => {
+				if (result.top) client.emit('own-detected', result.top.className);
+			})
+			.catch((error) => console.log('Own-camera inference failed:', error.message))
+			.finally(() => {
+				inferenceInFlight = false;
+			});
+	};
+}
+
 // socket server listening
 io.on('connection', client => {
 	console.log('connection established')
@@ -65,6 +91,12 @@ io.on('connection', client => {
 		io.emit('frame', data);
 		maybeRunInference(data);
 	});
+
+	const runOwnCameraInference = makeOwnCameraInference(client);
+	client.on('camera-frame', data => {
+		runOwnCameraInference(data);
+	});
+
 	client.on('disconnect', () => {
 		console.log('client disconnected');
 	});
