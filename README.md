@@ -1,5 +1,12 @@
 # Human Anomaly Detection — Backend
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-bimeshpoudel.com.np-facc15)](https://www.bimeshpoudel.com.np/human-anomaly-live-demo)
+[![Node.js](https://img.shields.io/badge/Node.js-5fa04e?logo=nodedotjs&logoColor=white)](https://nodejs.org)
+[![Express](https://img.shields.io/badge/Express-000)](https://expressjs.com)
+[![Socket.IO](https://img.shields.io/badge/Socket.IO-010101?logo=socketdotio)](https://socket.io)
+[![Prisma](https://img.shields.io/badge/Prisma-2d3748?logo=prisma)](https://www.prisma.io)
+[![YOLOv8](https://img.shields.io/badge/YOLOv8-ONNX-8A2BE2)](https://docs.ultralytics.com)
+
 Express + Socket.IO + Prisma/Postgres API. This is the hub of the system: it
 receives live camera frames from [server-opencv](https://github.com/Amunet98/server-opencv),
 runs a self-hosted YOLOv8 ONNX model (`best.onnx`) against them, broadcasts
