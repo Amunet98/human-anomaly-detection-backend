@@ -16,6 +16,6 @@ services:
           name: anomaly-detection-db
           property: connectionString
       - key: CLASS_NAMES
-        value: "Fall Detected,No Fall"
+        value: "fall,sit,stand"
       - key: DETECTION_CONFIDENCE
         value: "0.4"
