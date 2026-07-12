@@ -1,6 +1,9 @@
 const path = require('path');
-const dns = require('dns').promises;
+const dns = require('dns');
+const dnsPromises = require('dns').promises;
 const net = require('net');
+const http = require('http');
+const https = require('https');
 const ort = require('onnxruntime-node');
 const sharp = require('sharp');
 const axios = require('axios');
@@ -206,7 +209,7 @@ async function assertPublicHttpUrl(rawUrl) {
 	}
 	let addresses;
 	try {
-		addresses = await dns.lookup(parsed.hostname, { all: true });
+		addresses = await dnsPromises.lookup(parsed.hostname, { all: true });
 	} catch {
 		throw Object.assign(new Error("Could not resolve that URL's host."), { statusCode: 400 });
 	}
@@ -214,6 +217,32 @@ async function assertPublicHttpUrl(rawUrl) {
 		throw Object.assign(new Error('That URL is not allowed.'), { statusCode: 400 });
 	}
 }
+
+// assertPublicHttpUrl above resolves+validates once for a fast, friendly
+// error message - but axios resolves the hostname again on its own when it
+// actually opens the connection, moments later. A malicious host with a
+// short DNS TTL could pass the first check while pointing at a public IP,
+// then re-resolve to an internal one by the time axios connects (DNS
+// rebinding / TOCTOU). This custom `lookup` re-validates at the exact
+// moment the TCP connection is opened, so there's no gap between "checked"
+// and "used".
+function validatingLookup(hostname, options, callback) {
+	if (typeof options === 'function') {
+		callback = options;
+		options = {};
+	}
+	dns.lookup(hostname, { all: true }, (err, addresses) => {
+		if (err) return callback(err);
+		if (!addresses.length || addresses.some((a) => isDisallowedIp(a.address))) {
+			return callback(new Error('That URL is not allowed.'));
+		}
+		if (options.all) return callback(null, addresses);
+		const { address, family } = addresses[0];
+		callback(null, address, family);
+	});
+}
+const validatingHttpAgent = new http.Agent({ lookup: validatingLookup });
+const validatingHttpsAgent = new https.Agent({ lookup: validatingLookup });
 
 async function analyzeUrl(imageUrl) {
 	await assertPublicHttpUrl(imageUrl);
@@ -224,6 +253,8 @@ async function analyzeUrl(imageUrl) {
 		timeout: 8000,
 		// A public URL could still redirect to an internal one - don't follow.
 		maxRedirects: 0,
+		httpAgent: validatingHttpAgent,
+		httpsAgent: validatingHttpsAgent,
 		headers: { 'User-Agent': 'Mozilla/5.0 (compatible; human-anomaly-detection-bot/1.0)' },
 	});
 	return analyzeBuffer(Buffer.from(response.data));

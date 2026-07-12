@@ -95,6 +95,16 @@ function analyzeRateLimited(ip) {
 	entry.count += 1;
 	return entry.count > ANALYZE_MAX_PER_WINDOW;
 }
+// Entries are never removed above, so without this sweep analyzeHits would
+// grow for as long as the process stays up (a new IP hitting /analyze once
+// adds a permanent entry). Clear out anything past its window every few
+// minutes instead.
+setInterval(() => {
+	const now = Date.now();
+	for (const [ip, entry] of analyzeHits) {
+		if (now > entry.resetAt) analyzeHits.delete(ip);
+	}
+}, 5 * 60_000).unref();
 
 function maybeRunInference(frameBase64) {
 	const now = Date.now();
