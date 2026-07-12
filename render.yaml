@@ -19,3 +19,5 @@ services:
         value: "fall,sit,stand"
       - key: DETECTION_CONFIDENCE
         value: "0.4"
+      - key: PRODUCER_TOKEN
+        sync: false

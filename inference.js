@@ -1,4 +1,6 @@
 const path = require('path');
+const dns = require('dns').promises;
+const net = require('net');
 const ort = require('onnxruntime-node');
 const sharp = require('sharp');
 const axios = require('axios');
@@ -165,11 +167,63 @@ async function analyzeBase64(base64Image) {
 	return analyzeBuffer(Buffer.from(raw, 'base64'));
 }
 
+// Blocks loopback/private/link-local ranges - notably 169.254.169.254, the
+// cloud metadata address that SSRF exploits target on AWS/GCP/Azure/etc.
+function isDisallowedIp(ip) {
+	const type = net.isIP(ip);
+	if (!type) return true;
+	if (type === 4) {
+		const [a, b] = ip.split('.').map(Number);
+		if (a === 127 || a === 10 || a === 0 || a >= 224) return true;
+		if (a === 172 && b >= 16 && b <= 31) return true;
+		if (a === 192 && b === 168) return true;
+		if (a === 169 && b === 254) return true;
+		return false;
+	}
+	const lower = ip.toLowerCase();
+	if (lower === '::1' || lower === '::') return true;
+	if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) return true;
+	if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
+	if (lower.startsWith('::ffff:')) return isDisallowedIp(lower.slice(7));
+	return false;
+}
+
+// Rejects anything that isn't a plain public http(s) URL before we let axios
+// fetch it - without this, `imageUrl` from the request body lets a caller
+// make this server request internal/cloud-metadata addresses (SSRF).
+async function assertPublicHttpUrl(rawUrl) {
+	let parsed;
+	try {
+		parsed = new URL(rawUrl);
+	} catch {
+		throw Object.assign(new Error('That is not a valid URL.'), { statusCode: 400 });
+	}
+	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+		throw Object.assign(new Error('Only http/https image URLs are allowed.'), { statusCode: 400 });
+	}
+	if (parsed.hostname === 'localhost') {
+		throw Object.assign(new Error('That URL is not allowed.'), { statusCode: 400 });
+	}
+	let addresses;
+	try {
+		addresses = await dns.lookup(parsed.hostname, { all: true });
+	} catch {
+		throw Object.assign(new Error("Could not resolve that URL's host."), { statusCode: 400 });
+	}
+	if (!addresses.length || addresses.some((a) => isDisallowedIp(a.address))) {
+		throw Object.assign(new Error('That URL is not allowed.'), { statusCode: 400 });
+	}
+}
+
 async function analyzeUrl(imageUrl) {
+	await assertPublicHttpUrl(imageUrl);
 	// Many image hosts (Wikimedia, Roboflow, etc.) reject requests with no
 	// User-Agent as bot traffic (403), even for a plain public image fetch.
 	const response = await axios.get(imageUrl, {
 		responseType: 'arraybuffer',
+		timeout: 8000,
+		// A public URL could still redirect to an internal one - don't follow.
+		maxRedirects: 0,
 		headers: { 'User-Agent': 'Mozilla/5.0 (compatible; human-anomaly-detection-bot/1.0)' },
 	});
 	return analyzeBuffer(Buffer.from(response.data));

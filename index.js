@@ -2,7 +2,25 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const app = express();
-app.use(cors());
+
+// Only the real frontend (production custom domain + its Vercel deployments)
+// and local dev may call this API / open a socket - closes off the "anyone
+// on the internet can drive this backend from their own page" gap. Requests
+// with no Origin header (curl, the opencv producer's Node socket.io-client)
+// are left alone since CORS can't meaningfully restrict non-browser callers
+// anyway; those are gated by PRODUCER_TOKEN instead where it matters.
+const ALLOWED_ORIGIN_PATTERNS = [
+	/^https:\/\/(www\.)?bimeshpoudel\.com\.np$/,
+	/^https:\/\/frontend-new-[a-z0-9-]+\.vercel\.app$/,
+	/^http:\/\/localhost:\d+$/,
+];
+function isAllowedOrigin(origin) {
+	if (!origin) return true;
+	return ALLOWED_ORIGIN_PATTERNS.some((re) => re.test(origin));
+}
+const corsOptions = { origin: (origin, callback) => callback(null, isAllowedOrigin(origin)) };
+
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '15mb' }));
 const server = require('http').Server(app);
 
@@ -14,7 +32,7 @@ const { analyzeBase64, analyzeUrl } = require('./inference');
 /// configuring socket
 const io = require('socket.io')(server, {
 	cors: {
-		origin: "*"
+		origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
 	},
 	transports: ["websocket", "polling"]
 });
@@ -51,6 +69,32 @@ let lastFrameBroadcastAt = 0;
 // 'stream-control' signal - we count real (non-producer) connections and
 // tell it to start/stop capturing accordingly.
 let viewerCount = 0;
+
+// Optional shared secret gating who counts as the real opencv producer.
+// `role=producer` alone is just a client-supplied query string - anyone can
+// send it - so without this set, isProducer below stays spoofable by design
+// (kept permissive so this doesn't break an existing deployment that hasn't
+// set the var yet). Set PRODUCER_TOKEN to the same random value here and in
+// server-opencv-main's env to actually close that gap.
+const PRODUCER_TOKEN = process.env.PRODUCER_TOKEN;
+
+// Per-IP sliding window for /analyze - it's a full ONNX inference run per
+// request, cheap to hammer and expensive to serve, so an unthrottled public
+// endpoint is an easy CPU-exhaustion DoS. In-memory/per-instance, resets on
+// restart - fine for this scale.
+const ANALYZE_WINDOW_MS = 60_000;
+const ANALYZE_MAX_PER_WINDOW = 20;
+const analyzeHits = new Map();
+function analyzeRateLimited(ip) {
+	const now = Date.now();
+	const entry = analyzeHits.get(ip);
+	if (!entry || now > entry.resetAt) {
+		analyzeHits.set(ip, { count: 1, resetAt: now + ANALYZE_WINDOW_MS });
+		return false;
+	}
+	entry.count += 1;
+	return entry.count > ANALYZE_MAX_PER_WINDOW;
+}
 
 function maybeRunInference(frameBase64) {
 	const now = Date.now();
@@ -99,7 +143,9 @@ function makeOwnCameraInference(client) {
 
 // socket server listening
 io.on('connection', client => {
-	const isProducer = client.handshake.query.role === 'producer';
+	const isProducer = PRODUCER_TOKEN
+		? client.handshake.query.role === 'producer' && client.handshake.query.token === PRODUCER_TOKEN
+		: client.handshake.query.role === 'producer';
 
 	if (isProducer) {
 		console.log('opencv producer connected');
@@ -114,6 +160,11 @@ io.on('connection', client => {
 	}
 
 	client.on('data', data => {
+		// Only the real opencv capture service should be able to push frames
+		// into the shared live feed / detection history - without this check
+		// any connected client could spoof 'data' events (fake live feed
+		// content, junk written to raw_data via recordDetection).
+		if (!isProducer) return;
 		const now = Date.now();
 		if (now - lastFrameBroadcastAt >= FRAME_BROADCAST_INTERVAL_MS) {
 			lastFrameBroadcastAt = now;
@@ -145,6 +196,10 @@ app.get('/', (req, res) => {
 // uploaded/linked image - what the frontend's upload and URL-check
 // features call instead of a third-party API.
 app.post('/analyze', async (req, res) => {
+	const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress;
+	if (analyzeRateLimited(ip)) {
+		return res.status(429).send('Too many requests - give it a minute.');
+	}
 	try {
 		const { image, imageUrl } = req.body;
 		if (!image && !imageUrl) {
@@ -154,6 +209,10 @@ app.post('/analyze', async (req, res) => {
 		res.status(200).send(result);
 	} catch (error) {
 		console.log(error);
+		// Validation errors (bad/disallowed URL, e.g. SSRF guard) from analyzeUrl.
+		if (error.statusCode) {
+			return res.status(error.statusCode).send(error.message);
+		}
 		// axios errors carry the failed HTTP response - surface that (e.g. a
 		// host blocking the fetch with 403/400) instead of a generic 500 that
 		// looks like our own server broke.
@@ -186,59 +245,67 @@ app.get('/category', async (req, res) => {
 
 app.get('/item/:id', async (req, res) => {
 	try {
-		const categoryId = req.params.id
-		if (categoryId == null || undefined) {
-			res.status(500);
-			res.send('please pass category id in request params !');
+		const categoryId = parseInt(req.params.id, 10);
+		if (Number.isNaN(categoryId)) {
+			return res.status(400).send('please pass a valid category id in request params !');
 		}
 		const output = await prisma.items.findMany({
 			where: {
-				category_id: parseInt(categoryId)
+				category_id: categoryId
 			}
 		});
-		res.send(output);
-		res.status(200);
+		res.status(200).send(output);
 	} catch (error) {
 		console.log(error);
-		res.status(500);
-		res.send('internal Server error')
+		res.status(500).send('internal Server error');
 	}
 });
 
 app.get('/item/classes/:id', async (req, res) => {
 	try {
-		const itemId = req.params.id
-		if (itemId == null || undefined) {
-			res.status(500);
-			res.send('please pass item id in request params !');
+		const itemId = parseInt(req.params.id, 10);
+		if (Number.isNaN(itemId)) {
+			return res.status(400).send('please pass a valid item id in request params !');
 		}
 		const output = await prisma.item_class_assign.findMany({
 			where: {
-				item_id: parseInt(itemId)
+				item_id: itemId
 			}
 		});
-		res.send(output);
-		res.status(200);
+		res.status(200).send(output);
 	} catch (error) {
 		console.log(error);
-		res.status(500);
-		res.send('internal Server error')
+		res.status(500).send('internal Server error');
 	}
 });
 
+// Deliberately excludes image_frame - this is unauthenticated, and the raw
+// captured camera frames shouldn't be bulk-downloadable by anyone who finds
+// the URL. Capped to the most recent 200 so the response can't grow
+// unbounded as raw_data accumulates.
 app.get('/detected', async (req, res) => {
 	try {
 		const output = await prisma.raw_data.findMany({
 			orderBy: {
 				time: 'desc'
 			},
+			take: 200,
+			select: {
+				id: true,
+				item_class_assign_id: true,
+				category_id: true,
+				item_id: true,
+				class_id: true,
+				time: true,
+				gps_coordinates_lat: true,
+				gps_coordinates_lng: true,
+				name: true,
+			},
 		});
-		res.send(output);
-		res.status(200);
+		res.status(200).send(output);
 	} catch (error) {
 		console.log(error);
-		res.status(500);
-		res.send('internal Server error')
+		res.status(500).send('internal Server error');
 	}
 });
 
