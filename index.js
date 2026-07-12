@@ -46,6 +46,12 @@ let inferenceInFlight = false;
 const FRAME_BROADCAST_INTERVAL_MS = 150;
 let lastFrameBroadcastAt = 0;
 
+// The opencv capture service used to stream 24/7 regardless of whether
+// anyone was watching. It now connects with ?role=producer and waits for a
+// 'stream-control' signal - we count real (non-producer) connections and
+// tell it to start/stop capturing accordingly.
+let viewerCount = 0;
+
 function maybeRunInference(frameBase64) {
 	const now = Date.now();
 	if (inferenceInFlight || now - lastInferenceAt < INFERENCE_INTERVAL_MS) return;
@@ -93,7 +99,20 @@ function makeOwnCameraInference(client) {
 
 // socket server listening
 io.on('connection', client => {
-	console.log('connection established')
+	const isProducer = client.handshake.query.role === 'producer';
+
+	if (isProducer) {
+		console.log('opencv producer connected');
+		client.join('producers');
+		// Covers a producer reconnect (e.g. after a Render restart) while
+		// viewers are already watching - without this it'd stay paused.
+		client.emit('stream-control', { active: viewerCount > 0 });
+	} else {
+		console.log('connection established');
+		viewerCount++;
+		if (viewerCount === 1) io.to('producers').emit('stream-control', { active: true });
+	}
+
 	client.on('data', data => {
 		const now = Date.now();
 		if (now - lastFrameBroadcastAt >= FRAME_BROADCAST_INTERVAL_MS) {
@@ -110,6 +129,10 @@ io.on('connection', client => {
 
 	client.on('disconnect', () => {
 		console.log('client disconnected');
+		if (!isProducer) {
+			viewerCount = Math.max(0, viewerCount - 1);
+			if (viewerCount === 0) io.to('producers').emit('stream-control', { active: false });
+		}
 	});
 });
 
