@@ -39,11 +39,14 @@ const io = require('socket.io')(server, {
 
 // Persists a detection so /detected has real history, and broadcasts it to
 // connected clients as the simple label string LiveStream/Home.js expect.
-async function recordDetection(label, frameBase64) {
+// Deliberately doesn't store the triggering frame - nothing reads it back
+// (see /detected's select above), so storing it was pure unbounded growth
+// against Render's free-tier Postgres storage cap.
+async function recordDetection(label) {
 	io.emit('detected', label);
 	try {
 		await prisma.raw_data.create({
-			data: { name: label, image_frame: frameBase64 },
+			data: { name: label },
 		});
 	} catch (error) {
 		console.log('Failed to persist detection:', error.message);
@@ -116,7 +119,7 @@ function maybeRunInference(frameBase64) {
 		.then((result) => {
 			if (result.top) {
 				console.log(`Detected: ${result.top.className} (${result.top.confidence})`);
-				return recordDetection(result.top.className, frameBase64);
+				return recordDetection(result.top.className);
 			}
 		})
 		.catch((error) => console.log('Inference failed:', error.message))
