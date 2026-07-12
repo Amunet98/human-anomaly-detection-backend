@@ -39,6 +39,13 @@ const INFERENCE_INTERVAL_MS = 500;
 let lastInferenceAt = 0;
 let inferenceInFlight = false;
 
+// Relaying every incoming frame (~25fps) to every connected viewer chews
+// through bandwidth fast (Render free tier is 5GB/mo egress) for a live
+// preview that doesn't need full frame rate. Throttle the broadcast
+// independently of inference.
+const FRAME_BROADCAST_INTERVAL_MS = 150;
+let lastFrameBroadcastAt = 0;
+
 function maybeRunInference(frameBase64) {
 	const now = Date.now();
 	if (inferenceInFlight || now - lastInferenceAt < INFERENCE_INTERVAL_MS) return;
@@ -88,7 +95,11 @@ function makeOwnCameraInference(client) {
 io.on('connection', client => {
 	console.log('connection established')
 	client.on('data', data => {
-		io.emit('frame', data);
+		const now = Date.now();
+		if (now - lastFrameBroadcastAt >= FRAME_BROADCAST_INTERVAL_MS) {
+			lastFrameBroadcastAt = now;
+			io.emit('frame', data);
+		}
 		maybeRunInference(data);
 	});
 
