@@ -7,6 +7,7 @@ const https = require('https');
 const ort = require('onnxruntime-node');
 const sharp = require('sharp');
 const axios = require('axios');
+const { classifyPosture } = require('./posture');
 
 // Sharp's libvips backend keeps a decode cache and a worker pool by default,
 // both of which cost real memory that a 512MB-RAM host doesn't have to
@@ -18,16 +19,24 @@ sharp.concurrency(1);
 const MODEL_PATH = path.join(__dirname, 'best.onnx');
 const INPUT_SIZE = 640;
 
-// best.onnx does carry ultralytics metadata, and it is the authority on class
-// order: names = {0: 'fall', 1: 'sit', 2: 'stand'} (trained from
-// stand-sit-fall-2/data.yaml, imgsz 640, opset 12, nms=False). onnxruntime-node
-// doesn't expose custom metadata_props, so the names are restated here rather
-// than read back from the file - keep this default in sync with the model, and
-// with CLASS_NAMES in render.yaml / .env. Retraining with a different class
-// order means changing both.
+// The posture vocabulary, NOT the model's class list. best.onnx is now
+// COCO-pretrained yolov8n-pose: a single `person` class plus 17 keypoints, with
+// the three postures derived from keypoint geometry in posture.js. Kept as an
+// env var because render.yaml and the Render dashboard still set it and the
+// browser's constants.js restates the same three names.
 const CLASS_NAMES = (process.env.CLASS_NAMES || 'fall,sit,stand')
 	.split(',')
 	.map((s) => s.trim());
+
+// COCO keypoint order, as emitted by ultralytics' pose head. Mirrors
+// KEYPOINT_NAMES in the browser's constants.js.
+const KEYPOINT_NAMES = [
+	'nose', 'leftEye', 'rightEye', 'leftEar', 'rightEar',
+	'leftShoulder', 'rightShoulder', 'leftElbow', 'rightElbow',
+	'leftWrist', 'rightWrist', 'leftHip', 'rightHip',
+	'leftKnee', 'rightKnee', 'leftAnkle', 'rightAnkle',
+];
+const KP_CONF_THRESHOLD = 0.5;
 
 const CONFIDENCE_THRESHOLD = parseFloat(process.env.DETECTION_CONFIDENCE || '0.4');
 const IOU_THRESHOLD = 0.45;
@@ -147,54 +156,86 @@ function filterTinyBoxes(boxes) {
 	return boxes.filter((b) => area(b) >= MIN_BOX_AREA_RATIO * maxArea);
 }
 
-// Parses YOLOv8's raw export output: [1, 4 + numClasses, numAnchors],
-// laid out channel-major (all cx, then all cy, then all w, then all h,
-// then per-class scores), and maps boxes back to original image pixels.
+// Parses the pose model's raw export output: [1, 5 + numKeypoints*3,
+// numAnchors], laid out channel-major (all cx, then all cy, w, h, then ONE
+// person-confidence plane, then x, y, confidence per keypoint), maps everything
+// back to original image pixels, and derives a posture from the geometry.
 //
-// numClasses and numAnchors come from the tensor's own dims rather than from
-// constants: driving the class loop off CLASS_NAMES.length means a misconfigured
-// CLASS_NAMES silently drops the model's trailing classes instead of failing
-// loudly, and hardcoding 8400 anchors bakes in imgsz=640.
+// Mirrors decodePose() in the browser's postprocess.js - keep the two in step
+// or frontend-new's `npm run parity` fails.
+//
+// numKeypoints comes from the tensor's own dims rather than from KEYPOINT_NAMES,
+// for the same reason the old decoder read numClasses from dims: a mismatch
+// should fail loudly rather than silently truncate.
+//
+// The model has a single class (`person`), so unlike the old 3-class head there
+// is no per-class score plane and no argmax - channel 4 is the confidence
+// directly. Keypoints arrive in the same 640-canvas coordinates as the box and
+// undo the letterbox with identical scale/pad arithmetic.
 function postprocess(output, { scale, padLeft, padTop }) {
 	const outputData = output.data;
 	const [, channels, numAnchors] = output.dims;
-	const numClasses = channels - 4;
+	const numKeypoints = (channels - 5) / 3;
 	const boxes = [];
 	for (let a = 0; a < numAnchors; a++) {
-		let bestScore = -Infinity;
-		let bestClass = -1;
-		for (let c = 0; c < numClasses; c++) {
-			const score = outputData[(4 + c) * numAnchors + a];
-			if (score > bestScore) {
-				bestScore = score;
-				bestClass = c;
-			}
-		}
-		if (bestScore < CONFIDENCE_THRESHOLD) continue;
+		const personConf = outputData[4 * numAnchors + a];
+		if (personConf < CONFIDENCE_THRESHOLD) continue;
 
 		const cx = outputData[0 * numAnchors + a];
 		const cy = outputData[1 * numAnchors + a];
 		const w = outputData[2 * numAnchors + a];
 		const h = outputData[3 * numAnchors + a];
 
+		const keypoints = [];
+		for (let k = 0; k < numKeypoints; k++) {
+			const base = (5 + k * 3) * numAnchors + a;
+			const confidence = outputData[base + 2 * numAnchors];
+			keypoints.push({
+				name: KEYPOINT_NAMES[k] ?? `kp_${k}`,
+				x: (outputData[base] - padLeft) / scale,
+				y: (outputData[base + numAnchors] - padTop) / scale,
+				confidence,
+				visible: confidence >= KP_CONF_THRESHOLD,
+			});
+		}
+
 		boxes.push({
 			x1: (cx - w / 2 - padLeft) / scale,
 			y1: (cy - h / 2 - padTop) / scale,
 			x2: (cx + w / 2 - padLeft) / scale,
 			y2: (cy + h / 2 - padTop) / scale,
-			score: bestScore,
-			classId: bestClass,
+			score: personConf,
+			classId: 0,
+			keypoints,
 		});
 	}
 
-	return filterTinyBoxes(nms(boxes)).map((b) => ({
-		// Falls back to the raw index rather than `undefined` if CLASS_NAMES is
-		// shorter than the model's class count - a visibly wrong label beats a
-		// silently missing one.
-		className: CLASS_NAMES[b.classId] ?? `class_${b.classId}`,
-		confidence: Math.round(b.score * 1000) / 1000,
-		box: [Math.round(b.x1), Math.round(b.y1), Math.round(b.x2), Math.round(b.y2)],
-	}));
+	return filterTinyBoxes(nms(boxes)).map((b) => {
+		const posture = classifyPosture(b.keypoints, b, b.score);
+		return {
+			className: posture.className,
+			confidence: Math.round(posture.confidence * 1000) / 1000,
+			box: [Math.round(b.x1), Math.round(b.y1), Math.round(b.x2), Math.round(b.y2)],
+			// Why this posture was chosen, and how much of the body the classifier
+			// could actually see. Cheap to send and the only way to tell a confident
+			// read from a tier-C guess without re-running the model.
+			tier: posture.tier,
+			reason: posture.reason,
+			personConfidence: Math.round(b.score * 1000) / 1000,
+			keypoints: keypointsForWire(b.keypoints),
+		};
+	});
+}
+
+// Keypoints go over a socket at up to 2 fps, so they are rounded to whole pixels
+// and stripped to the fields the overlay needs. Occluded joints are sent as null
+// rather than as a coordinate the client cannot tell is a guess.
+function keypointsForWire(keypoints) {
+	return keypoints.map((k) =>
+		k.visible
+			? { name: k.name, x: Math.round(k.x), y: Math.round(k.y), c: Math.round(k.confidence * 100) / 100 }
+			: { name: k.name, x: null, y: null, c: Math.round(k.confidence * 100) / 100 }
+	);
 }
 
 async function analyzeBuffer(buffer) {
@@ -203,7 +244,16 @@ async function analyzeBuffer(buffer) {
 	const tensor = new ort.Tensor('float32', tensorData, [1, 3, INPUT_SIZE, INPUT_SIZE]);
 	const results = await session.run({ images: tensor });
 	const detections = postprocess(results.output0, { scale, padLeft, padTop });
-	const top = detections.reduce(
+	// `top` is the single detection the socket path and StillResult surface, so
+	// for an anomaly detector it has to be the *most alarming* one, not merely
+	// the most confident. The pose model finds every person in frame - a street
+	// scene now returns the faller plus four background pedestrians - and a
+	// calmly-standing bystander routinely outscores someone mid-fall. Ranking a
+	// fall above everything else is what makes "one person is falling" survive
+	// the reduction to a single label.
+	const falls = detections.filter((d) => d.className === 'fall');
+	const pool = falls.length ? falls : detections;
+	const top = pool.reduce(
 		(best, d) => (!best || d.confidence > best.confidence ? d : best),
 		null
 	);
