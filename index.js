@@ -38,11 +38,18 @@ const io = require('socket.io')(server, {
 });
 
 // Persists a detection so /detected has real history, and broadcasts it to
-// connected clients as the simple label string LiveStream/Home.js expect.
-// Deliberately doesn't store the triggering frame - nothing reads it back
-// (see /detected's select above), so storing it was pure unbounded growth
-// against Render's free-tier Postgres storage cap.
-async function recordDetection(label) {
+// connected clients. Deliberately doesn't store the triggering frame - nothing
+// reads it back (see /detected's select above), so storing it was pure
+// unbounded growth against Render's free-tier Postgres storage cap.
+//
+// Two events go out for the same result. 'detection' carries the full payload
+// (every box, not just the top one) so clients can draw overlays; 'detected' is
+// the legacy bare label string. The frontend deploys to Vercel and this deploys
+// to Render, independently - so there is always a window where one side is new
+// and the other isn't. Keep emitting both until the old frontend is gone.
+async function recordDetection(result) {
+	const label = result.top.className;
+	io.emit('detection', { detections: result.detections, top: result.top, at: Date.now() });
 	io.emit('detected', label);
 	try {
 		await prisma.raw_data.create({
@@ -119,7 +126,7 @@ function maybeRunInference(frameBase64) {
 		.then((result) => {
 			if (result.top) {
 				console.log(`Detected: ${result.top.className} (${result.top.confidence})`);
-				return recordDetection(result.top.className);
+				return recordDetection(result);
 			}
 		})
 		.catch((error) => console.log('Inference failed:', error.message))
@@ -145,7 +152,15 @@ function makeOwnCameraInference(client) {
 
 		analyzeBase64(frameBase64)
 			.then((result) => {
-				if (result.top) client.emit('own-detected', result.top.className);
+				if (!result.top) return;
+				// Full payload for overlay-capable clients + the legacy label
+				// string, same deploy-skew reasoning as recordDetection above.
+				client.emit('own-detection', {
+					detections: result.detections,
+					top: result.top,
+					at: Date.now(),
+				});
+				client.emit('own-detected', result.top.className);
 			})
 			.catch((error) => console.log('Own-camera inference failed:', error.message))
 			.finally(() => {

@@ -17,13 +17,15 @@ sharp.concurrency(1);
 
 const MODEL_PATH = path.join(__dirname, 'best.onnx');
 const INPUT_SIZE = 640;
-const NUM_ANCHORS = 8400;
 
-// The exported best.onnx has no embedded class-name metadata (verified by
-// inspecting the file directly), so these are inferred from context (the
-// project's Roboflow model is "fall-detection") rather than read from the
-// model. Confirm/relabel via env if the index order turns out to be swapped.
-const CLASS_NAMES = (process.env.CLASS_NAMES || 'Fall Detected,No Fall')
+// best.onnx does carry ultralytics metadata, and it is the authority on class
+// order: names = {0: 'fall', 1: 'sit', 2: 'stand'} (trained from
+// stand-sit-fall-2/data.yaml, imgsz 640, opset 12, nms=False). onnxruntime-node
+// doesn't expose custom metadata_props, so the names are restated here rather
+// than read back from the file - keep this default in sync with the model, and
+// with CLASS_NAMES in render.yaml / .env. Retraining with a different class
+// order means changing both.
+const CLASS_NAMES = (process.env.CLASS_NAMES || 'fall,sit,stand')
 	.split(',')
 	.map((s) => s.trim());
 
@@ -115,13 +117,21 @@ function nms(boxes) {
 // Parses YOLOv8's raw export output: [1, 4 + numClasses, numAnchors],
 // laid out channel-major (all cx, then all cy, then all w, then all h,
 // then per-class scores), and maps boxes back to original image pixels.
-function postprocess(outputData, { scale, padLeft, padTop }) {
+//
+// numClasses and numAnchors come from the tensor's own dims rather than from
+// constants: driving the class loop off CLASS_NAMES.length means a misconfigured
+// CLASS_NAMES silently drops the model's trailing classes instead of failing
+// loudly, and hardcoding 8400 anchors bakes in imgsz=640.
+function postprocess(output, { scale, padLeft, padTop }) {
+	const outputData = output.data;
+	const [, channels, numAnchors] = output.dims;
+	const numClasses = channels - 4;
 	const boxes = [];
-	for (let a = 0; a < NUM_ANCHORS; a++) {
+	for (let a = 0; a < numAnchors; a++) {
 		let bestScore = -Infinity;
 		let bestClass = -1;
-		for (let c = 0; c < CLASS_NAMES.length; c++) {
-			const score = outputData[(4 + c) * NUM_ANCHORS + a];
+		for (let c = 0; c < numClasses; c++) {
+			const score = outputData[(4 + c) * numAnchors + a];
 			if (score > bestScore) {
 				bestScore = score;
 				bestClass = c;
@@ -129,10 +139,10 @@ function postprocess(outputData, { scale, padLeft, padTop }) {
 		}
 		if (bestScore < CONFIDENCE_THRESHOLD) continue;
 
-		const cx = outputData[0 * NUM_ANCHORS + a];
-		const cy = outputData[1 * NUM_ANCHORS + a];
-		const w = outputData[2 * NUM_ANCHORS + a];
-		const h = outputData[3 * NUM_ANCHORS + a];
+		const cx = outputData[0 * numAnchors + a];
+		const cy = outputData[1 * numAnchors + a];
+		const w = outputData[2 * numAnchors + a];
+		const h = outputData[3 * numAnchors + a];
 
 		boxes.push({
 			x1: (cx - w / 2 - padLeft) / scale,
@@ -145,7 +155,10 @@ function postprocess(outputData, { scale, padLeft, padTop }) {
 	}
 
 	return nms(boxes).map((b) => ({
-		className: CLASS_NAMES[b.classId],
+		// Falls back to the raw index rather than `undefined` if CLASS_NAMES is
+		// shorter than the model's class count - a visibly wrong label beats a
+		// silently missing one.
+		className: CLASS_NAMES[b.classId] ?? `class_${b.classId}`,
 		confidence: Math.round(b.score * 1000) / 1000,
 		box: [Math.round(b.x1), Math.round(b.y1), Math.round(b.x2), Math.round(b.y2)],
 	}));
@@ -156,7 +169,7 @@ async function analyzeBuffer(buffer) {
 	const { tensorData, scale, padLeft, padTop } = await preprocess(buffer);
 	const tensor = new ort.Tensor('float32', tensorData, [1, 3, INPUT_SIZE, INPUT_SIZE]);
 	const results = await session.run({ images: tensor });
-	const detections = postprocess(results.output0.data, { scale, padLeft, padTop });
+	const detections = postprocess(results.output0, { scale, padLeft, padTop });
 	const top = detections.reduce(
 		(best, d) => (!best || d.confidence > best.confidence ? d : best),
 		null
