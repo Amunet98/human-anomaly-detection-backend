@@ -4,12 +4,17 @@ Fall / sit / stand detector used by the Human Anomaly Detection system, both
 server-side (`inference.js`) and in the browser
 (`frontend-new/src/lib/detect/`).
 
-> **Accuracy has not been measured.** The training notebook's `model.val()`
-> output was never saved, so there is no recorded mAP for the file that is
-> actually deployed. The tables below are marked TBD and are filled in by
-> running sections 3, 3a and 3b of `train_fall_detection.ipynb`. Until then,
-> treat any accuracy claim about this model — including in the portfolio and
-> the READMEs — as unsupported.
+> **Detection mAP has still not been measured.** The training notebook's
+> `model.val()` output was never saved, so there is no recorded mAP for the file
+> that is actually deployed. The mAP tables below remain TBD and are filled in by
+> running sections 3, 3a and 3b of `train_fall_detection.ipynb`. Treat any *mAP*
+> claim about this model — including in the portfolio and the READMEs — as
+> unsupported.
+>
+> **Top-1 posture accuracy now is measured** — see "Measured accuracy" below.
+> It is a narrower question than mAP (whole-image top-1 on single-subject
+> fixtures, nothing about box localisation), but it is real and reproducible via
+> `npm run eval:robust` in `frontend-new`.
 
 ## What it is
 
@@ -41,7 +46,38 @@ Nano was chosen deliberately — the backend runs on a 512 MB free-tier host tha
 has already had to be worked around for OOM crashes and 30-second inference
 (see commits `90b4fb4`, `bfa3d9d`).
 
-## Accuracy — TBD
+## Measured accuracy — top-1 posture
+
+From `frontend-new/scripts/eval-check.mjs` (`npm run eval:robust`), against the
+5-image labelled fixture set in `scripts/eval-fixtures/`. Measured 2026-08-08,
+after the class-agnostic-NMS and tiny-box fixes.
+
+**Clean images: 5/5 = 100%, macro-F1 1.000.** Every fixture gets the right label.
+
+**Under perturbation (6 variants per fixture — hflip, grayscale, darken-40%,
+blur-3px, downscale-320w, centre-crop-80%): 23/30 = 76.7%, macro-F1 0.763.**
+
+| class | precision | recall | F1 |
+| --- | --- | --- | --- |
+| fall | 1.000 | 0.667 | 0.800 |
+| sit | **0.545** | **1.000** | 0.706 |
+| stand | 0.818 | 0.750 | 0.783 |
+
+The `sit` row is the finding. Recall 1.000 with precision 0.545 means the model
+never misses a sit and *also* labels nearly half its non-sits as sit — five false
+positives, drawn from both other classes. `sit` is a fallback attractor: degrade
+an image in almost any way and the answer drifts toward it. Survival by
+perturbation: `dark-40%` 5/5, `hflip` 4/5, `blur-3px` 4/5, `downscale-320` 4/5,
+`grayscale` 3/5, `crop-80%` 3/5.
+
+This is the number that justifies the pose-based replacement. It is invisible to
+clean-image testing (100%) and would also be largely invisible to detection mAP
+on the Roboflow test split, since that split shares the training distribution.
+Note the fixture set is only 5 images — the *direction* is solid and matches
+hand-testing, but the decimal places are not meaningful. Grow it to 15-20 per
+class before quoting these figures anywhere load-bearing.
+
+## Detection mAP — TBD
 
 Roboflow **test** split, from notebook section 3:
 
