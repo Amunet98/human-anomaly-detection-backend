@@ -77,17 +77,47 @@ newer major once this is resolved upstream.
 
 ## Deploying
 
-Needs a long-lived Node process (Socket.IO) and a Postgres database —
-Railway or Render both work well, either with a managed Postgres add-on or
-an external one (Supabase/Neon). Set `DATABASE_URL`, `PRODUCER_TOKEN`, and
-(if the platform doesn't set it automatically) `PORT`. Run
-`npx prisma db push` once against the production database before first boot.
+Needs a long-lived Node process (Socket.IO) and a Postgres database — Railway
+or Render both work well. Set `DATABASE_URL`, `PRODUCER_TOKEN`, and (if the
+platform doesn't set it automatically) `PORT`. The Render build command runs
+`prisma db push` and the seed on every deploy, so a fresh empty database
+provisions itself.
+
+Postgres is on **Neon's free plan**, not a Render managed add-on: Render's
+free databases expire 30 days after creation and are then deleted, and a
+workspace gets only one, so they can't back a long-lived demo. Neon's free
+tier doesn't expire.
+
+Use Neon's **direct (unpooled)** connection string — this backend is a single
+long-lived process, so pooling gains nothing, and `prisma db push` can fail
+through pgbouncer in transaction mode. Keep only `?sslmode=require` on the
+string; Prisma 5.22's query engine doesn't recognise `channel_binding`.
 
 The production instance runs on Render (GitHub-connected — push to `main`
-auto-deploys). `.github/workflows/keep-warm.yml` pings both Render services
-every 10 minutes so the free-tier demo stays awake; note GitHub pauses
-scheduled workflows after ~60 days without repo activity — re-enable it from
-the Actions tab (or push any commit) if the demo starts cold-starting.
+auto-deploys).
+
+### Keeping the demo warm
+
+Render's free tier spins a service down after 15 idle minutes, so a cold
+visitor waits ~50s. An external pinger (cron-job.org) hits `/` on both
+Render services every 10 minutes to keep them up.
+
+Two constraints shape that schedule, and both are easy to trip over:
+
+- **Render allows 750 free instance-hours per month across the whole
+  workspace.** Keeping *two* services awake 24/7 costs ~1460 h — over quota,
+  which suspends them until the month resets. So the pings are restricted to
+  a ~10-hour daily window (≈610 h/month, plus spin-down tails). Widening the
+  window past ~12 hours puts the quota at risk.
+- **The pings must target `/`, which never touches Prisma.** Hitting a
+  DB-backed route instead would wake Neon's compute on every ping and burn
+  its 100 compute-hours/month.
+
+This used to be a GitHub Actions cron (`.github/workflows/keep-warm.yml`),
+which was removed: scheduled workflows on free public repos are heavily
+deprioritized (a `*/10` cron actually fired about hourly), and runs were
+intermittently cancelled with "The job was not acquired by Runner of type
+hosted" — a GitHub capacity failure with no workflow-side fix.
 
 ## API
 
