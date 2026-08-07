@@ -61,6 +61,29 @@ const STAND_KNEE_DROP = 0.5;
 // 150 sits in the wide empty gap between them.
 const STAND_KNEE_ANGLE = 150;
 
+// Projected thigh length over projected shin length.
+//
+// The femur and tibia are within ~10% of each other in real length, so when
+// both lie in the image plane - which is what standing with vertical legs
+// means - their projected ratio is ~1. A thigh much shorter than its own shin
+// can only mean the thigh points toward or away from the lens.
+//
+// This catches the case both other features are blind to: someone sitting
+// facing the camera with their legs stretched out forward. Their knees sit
+// well below their hips (kneeDrop 0.64, reads as standing) and their leg is
+// nearly straight (kneeAngle 172deg, reads as standing), but the thigh is
+// foreshortened to 0.58 of its shin, which no standing pose produces.
+//
+// The two mechanisms are complementary rather than redundant: a side-on sit
+// has the thigh in-plane and horizontal, so kneeDrop and kneeAngle catch it
+// while the ratio stays ~1; a front-on sit foreshortens the thigh, so only the
+// ratio catches it. Measured - standing 1.00 / 1.01 / 1.07 / 1.08 / 1.11,
+// front-on seated 0.47 / 0.58, side-on seated 1.38 (caught by the other two).
+//
+// Robust to camera pitch because it is a ratio of two adjacent segments: a
+// high or low camera foreshortens thigh and shin together and cancels out.
+const SIT_THIGH_FORESHORTEN = 0.75;
+
 // Confidence multipliers by how much information was actually available.
 const TIER_FULL = 1.0; // hips + knees (+ ankles)
 const TIER_NO_ANKLE = 0.85; // hips + knees, knee angle unavailable
@@ -128,6 +151,7 @@ function postureFeatures(keypoints, box) {
     torsoLength: null,
     kneeDrop: null,
     kneeAngle: null,
+    thighShinRatio: null,
   };
 
   if (shoulder && hip) {
@@ -144,6 +168,9 @@ function postureFeatures(keypoints, box) {
   }
   if (hip && knee && ankle) {
     f.kneeAngle = angleAt(knee, hip, ankle);
+    const thigh = Math.hypot(knee.x - hip.x, knee.y - hip.y);
+    const shin = Math.hypot(ankle.x - knee.x, ankle.y - knee.y);
+    if (shin > 0) f.thighShinRatio = thigh / shin;
   }
   return f;
 }
@@ -200,6 +227,24 @@ function classifyPosture(keypoints, box, personConf) {
       confidence: personConf * TIER_NO_LEGS * leanPenalty,
       tier: 'C',
       reason: 'knees not visible; sit/stand indeterminate',
+    };
+  }
+
+  // A foreshortened thigh is treated as decisive rather than as one vote among
+  // three, because it is a statement about projection geometry rather than a
+  // correlation: no standing pose puts a thigh at 0.58 of its own shin. Left as
+  // a vote it would lose 2-1 to kneeDrop and kneeAngle in exactly the case it
+  // exists to catch, since those two are what fail there.
+  if (f.thighShinRatio !== null && f.thighShinRatio < SIT_THIGH_FORESHORTEN) {
+    return {
+      className: 'sit',
+      confidence:
+        personConf *
+        TIER_FULL *
+        leanPenalty *
+        margin(f.thighShinRatio, SIT_THIGH_FORESHORTEN, 0.4),
+      tier: 'A',
+      reason: `thigh ${f.thighShinRatio.toFixed(2)}x shin (foreshortened)`,
     };
   }
 

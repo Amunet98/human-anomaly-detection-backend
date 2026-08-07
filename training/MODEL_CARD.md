@@ -86,11 +86,47 @@ below confidence 0.5 counts as missing.
 | `torsoAngle` | shoulder-mid to hip-mid, degrees off vertical. 0 = upright, 90 = horizontal |
 | `kneeDrop` | `(kneeY - hipY)` over torso length. Large = hips well above knees |
 | `kneeAngle` | interior angle at the knee |
+| `thighShinRatio` | projected thigh length over projected shin length |
 | `aspect` | box w/h, tiebreak only, never a gate |
 
 Order: `torsoAngle >= 50` (or `aspect >= 1.5` with `torsoAngle >= 30`, covering a
-body lying toward the lens) is a **fall**; else `kneeDrop < 0.5` / `kneeAngle <
-150` is a **sit**; else **stand**.
+body lying toward the lens) is a **fall**; else `thighShinRatio < 0.75` is a
+**sit**; else `kneeDrop < 0.5` / `kneeAngle < 150` is a **sit**; else **stand**.
+
+### Why thigh foreshortening is a separate rule
+
+The femur and tibia are within ~10% of each other in real length, so their
+*projected* ratio is ~1 whenever both lie in the image plane — which is what
+standing with vertical legs means. A thigh much shorter than its own shin can
+only mean the thigh points toward or away from the lens.
+
+This exists because of a real miss (2026-08-08): a woman seated facing the camera
+with her legs stretched forward was classified `stand 63%`. Both other leg
+features genuinely read as standing — knees well below hips (`kneeDrop` 0.64) and
+an almost straight leg (`kneeAngle` 172°). Only the foreshortened thigh (0.58×
+shin) distinguished it. Fixture `bench-sit-frontal.jpg` and a unit test in
+`posture-check.mjs` (built from the real keypoints) guard it.
+
+The two mechanisms are complementary, not redundant:
+
+| sit viewed | thigh in image plane? | caught by |
+| --- | --- | --- |
+| side-on (thigh horizontal) | yes | `kneeDrop` + `kneeAngle`; ratio stays ~1 |
+| front-on (legs extended) | no | `thighShinRatio` only |
+
+Measured: standing **1.00 / 1.01 / 1.07 / 1.08 / 1.11**, front-on seated **0.47 /
+0.58**, side-on seated 1.38. The 0.75 threshold has ~0.17 of margin below and
+~0.25 above.
+
+It is applied as a **gate, not a vote**. Left as one signal among three it would
+lose 2–1 to `kneeDrop` and `kneeAngle` in precisely the case it exists to catch,
+since those two are what fail there. The justification for overriding them is
+that this is a statement about projection geometry rather than a correlation — no
+standing pose puts a thigh at 0.58 of its own shin. It is also robust to camera
+pitch, being a ratio of two adjacent segments: a high or low camera foreshortens
+thigh and shin together and cancels out.
+
+It runs *after* the fall check, so it cannot affect fall detection.
 
 Measured separation on the fixtures — upright subjects at 1.6/1.7/14.0 deg
 versus falls at 57.6 and 72.3 deg; seated knee 87 deg versus standing 175-179 deg.
@@ -126,18 +162,18 @@ labelled fixture set in `frontend-new/scripts/eval-fixtures/`. Measured
 
 | | clean | perturbed |
 | --- | --- | --- |
-| accuracy | **5/5 (100%)** | **30/30 (100%)** |
+| accuracy | **6/6 (100%)** | **36/36 (100%)** |
 | macro-F1 | 1.000 | 1.000 |
 
 Per-class, under perturbation: `fall` P=1.000 R=1.000, `sit` P=1.000 R=1.000,
 `stand` P=1.000 R=1.000. Survival is 5/5 for every one of the six perturbations
 individually.
 
-**Read this with the caveat it deserves.** The fixture set is five images. A
-perfect score on five images through six perturbations is 30 trials, not 30
+**Read this with the caveat it deserves.** The fixture set is six images. A
+perfect score on six images through six perturbations is 36 trials, not 36
 independent samples, and it does not mean the system is perfect — it means the
 fixture set no longer discriminates and has to grow before it can say anything
-more. What the number does support is the *comparison*: the same 30 trials that
+more. What the number does support is the *comparison*: the same trials that
 the old model failed 7 of, this one passes, and the failures it fixed were the
 systematic kind (every `stand` collapsing to `sit` under blur) rather than
 scattered noise.
