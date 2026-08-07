@@ -21,7 +21,7 @@ server-side (`inference.js`) and in the browser
 | Input | `images`, float32 `[1, 3, 640, 640]`, RGB CHW, `/255`, letterboxed with grey `rgb(114,114,114)` |
 | Output | `output0`, `[1, 7, 8400]`, channel-major, **no NMS**, sigmoid already applied |
 | Export | opset 12, `simplify=True`, `nms=False`, `dynamic=False` |
-| File | 11.7 MB (12,266,856 bytes) |
+| File | 11.7 MB (12,266,856 bytes); 10.65 MB brotli-compressed on the wire |
 | Exported | 2026-07-11, ultralytics 8.4.92 |
 
 Class order is the model's own, from its embedded ultralytics metadata. It is
@@ -131,6 +131,9 @@ In order of expected value per unit of effort:
    that the browser can carry the live path.
 
 Separately, **int8 dynamic quantisation** is worth evaluating for the browser
-build: fp32 weights barely compress (11.7 MB → 10.1 MB gzip), and quantisation
-would take the download to roughly 3 MB. It needs the baseline from section 3
-to measure what accuracy it costs.
+build. fp32 weights are high-entropy and barely compress — measured against the
+live deployment, the model is still **10.65 MB over the wire** after brotli, and
+the browser engine's full first load is **16.05 MB** (10.65 model + 5.30 ORT
+wasm + 0.11 worker). Quantisation would take the model to roughly 3 MB, i.e.
+more than halve that. It needs the baseline from section 3 to measure what
+accuracy it costs, which is the main reason it hasn't been done yet.
