@@ -135,6 +135,15 @@ fitted ones.
 
 **Occlusion tiers**, because two of five fixtures have no visible legs:
 
+Joints below `KP_CONF_THRESHOLD` (0.65) count as missing. That number is
+load-bearing: leg-joint confidence is sharply bimodal — genuine joints at 0.79
+and 0.80–1.00, joints the model is *guessing* at (legs behind a sofa) at
+0.42/0.46/0.47/0.50 and below 0.30, with the 0.50–0.79 band empty. The original
+0.5 sat directly on the guessing cluster, so two near-identical photos of the
+same standing woman returned `sit` and `stand`: one hidden knee scored exactly
+0.50 in one shot and 0.42 in the other, which was enough to move her between
+tier B and tier C. Guarded by fixtures `lodge-group-a/b.jpg`.
+
 | tier | available | behaviour | confidence x |
 | --- | --- | --- | --- |
 | A | hips + knees + ankles | full rule set | 1.0 |
@@ -162,21 +171,31 @@ labelled fixture set in `frontend-new/scripts/eval-fixtures/`. Measured
 
 | | clean | perturbed |
 | --- | --- | --- |
-| accuracy | **6/6 (100%)** | **36/36 (100%)** |
+| accuracy | **8/8 (100%)** | **48/48 (100%)** |
 | macro-F1 | 1.000 | 1.000 |
 
 Per-class, under perturbation: `fall` P=1.000 R=1.000, `sit` P=1.000 R=1.000,
 `stand` P=1.000 R=1.000. Survival is 5/5 for every one of the six perturbations
 individually.
 
-**Read this with the caveat it deserves.** The fixture set is six images. A
-perfect score on six images through six perturbations is 36 trials, not 36
+**Read this with the caveat it deserves.** The fixture set is eight images. A
+perfect score on eight images through six perturbations is 48 trials, not 48
 independent samples, and it does not mean the system is perfect — it means the
 fixture set no longer discriminates and has to grow before it can say anything
 more. What the number does support is the *comparison*: the same trials that
 the old model failed 7 of, this one passes, and the failures it fixed were the
 systematic kind (every `stand` collapsing to `sit` under blur) rather than
 scattered noise.
+
+The harness now also runs two **pass/fail** checks that top-1 accuracy cannot
+express: `expectedAll` verifies every person in a multi-subject frame, and
+`consistentWith` asserts that a pair of near-identical photos does not disagree.
+Both were added because a real bug hid behind top-1 — the standing woman flipped
+between `sit` and `stand` across two shots while top-1 stayed `sit` on both.
+
+Note fixture resolution is deliberate: `lodge-group-a/b.jpg` are stored at native
+2048px because downscaling them to 960px moved the offending keypoint confidence
+off the boundary and made them stop reproducing the bug entirely.
 
 Grow the set to 15-20 images per class — deliberately including desk-webcam
 framing, which the tier-C limitation above predicts will be the weak spot —

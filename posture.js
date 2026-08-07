@@ -28,7 +28,7 @@
 // fitted to a large sample - see MODEL_CARD.md on the fixture set's size.
 
 // Mirrors KP_CONF_THRESHOLD in the browser's constants.js.
-const KP_CONF_THRESHOLD = 0.5;
+const KP_CONF_THRESHOLD = 0.65;
 
 // --- tuning ---------------------------------------------------------------
 

@@ -36,7 +36,7 @@ const KEYPOINT_NAMES = [
 	'leftWrist', 'rightWrist', 'leftHip', 'rightHip',
 	'leftKnee', 'rightKnee', 'leftAnkle', 'rightAnkle',
 ];
-const KP_CONF_THRESHOLD = 0.5;
+const KP_CONF_THRESHOLD = 0.65;
 
 const CONFIDENCE_THRESHOLD = parseFloat(process.env.DETECTION_CONFIDENCE || '0.4');
 const IOU_THRESHOLD = 0.45;
