@@ -13,6 +13,10 @@ runs a self-hosted YOLOv8 ONNX model (`best.onnx`) against them, broadcasts
 detections to the [frontend](https://github.com/Amunet98/human-anomaly-detection-frontend)
 over a socket, and persists them to Postgres.
 
+Model provenance, class order, known failure modes and (once measured) accuracy
+live in [`training/MODEL_CARD.md`](training/MODEL_CARD.md). Worth reading before
+quoting any accuracy figure for this system — there isn't a measured one yet.
+
 ## How it fits together
 
 ```
@@ -25,7 +29,8 @@ server-opencv (webcam or sample video)
    backend (this repo)
         │  re-emits 'frame' to viewers (throttled to ~6.7 fps)
         │  samples frames for inference (~2/sec, throttled)
-        │  on detection: emits 'detected', writes raw_data row
+        │  on detection: emits 'detection' (every box) + 'detected'
+        │  (legacy label string), writes raw_data row
         ▼
    frontend (socket.io client + REST calls to /category, /item/:id, /analyze)
 ```
