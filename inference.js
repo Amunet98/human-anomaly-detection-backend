@@ -32,6 +32,17 @@ const CLASS_NAMES = (process.env.CLASS_NAMES || 'fall,sit,stand')
 const CONFIDENCE_THRESHOLD = parseFloat(process.env.DETECTION_CONFIDENCE || '0.4');
 const IOU_THRESHOLD = 0.45;
 
+// Minimum box area as a fraction of the *largest* surviving box, applied after
+// NMS. Mirrored in the browser's constants.js MIN_BOX_AREA_RATIO - keep the two
+// in step or npm run parity (frontend-new) fails.
+//
+// Kills sub-limb false positives: the model emits a `stand 0.43` box on a
+// subject's boot at 3.1% of the true person box's area. Relative rather than an
+// absolute fraction of frame area, because absolute is not scale-invariant - a
+// floor tight enough to catch that boot (1.15% of frame) would also delete
+// genuinely distant people in far-field CCTV.
+const MIN_BOX_AREA_RATIO = 0.15;
+
 let sessionPromise = null;
 function getSession() {
 	if (!sessionPromise) {
@@ -104,14 +115,36 @@ function iou(a, b) {
 	return inter / (areaA + areaB - inter);
 }
 
+// Greedy, class-AGNOSTIC NMS - a box is suppressed by any higher-scoring box it
+// overlaps, regardless of class. Mirrored in the browser's postprocess.js nms().
+//
+// Class-agnostic is forced by the label set: fall/sit/stand are mutually
+// exclusive *postures of one person*, not objects that can coexist in the same
+// place. The previous class-aware rule let the runner-up posture survive on the
+// same box, so a standing subject came back as both `stand 0.72` and `sit 0.44`
+// at IoU ~0.99. Restore the classId guard only if the model is ever retrained on
+// classes that can genuinely overlap.
 function nms(boxes) {
 	const sorted = [...boxes].sort((a, b) => b.score - a.score);
 	const kept = [];
 	for (const box of sorted) {
-		if (kept.some((k) => k.classId === box.classId && iou(k, box) > IOU_THRESHOLD)) continue;
+		if (kept.some((k) => iou(k, box) > IOU_THRESHOLD)) continue;
 		kept.push(box);
 	}
 	return kept;
+}
+
+// Drops boxes tiny relative to the largest survivor in the same frame. Runs
+// after NMS. Mirrored in the browser's postprocess.js filterTinyBoxes().
+//
+// The largest box is compared against itself and so is always kept - a lone
+// distant person is never self-filtered.
+function filterTinyBoxes(boxes) {
+	if (boxes.length < 2) return boxes;
+	const area = (b) => Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
+	const maxArea = Math.max(...boxes.map(area));
+	if (maxArea <= 0) return boxes;
+	return boxes.filter((b) => area(b) >= MIN_BOX_AREA_RATIO * maxArea);
 }
 
 // Parses YOLOv8's raw export output: [1, 4 + numClasses, numAnchors],
@@ -154,7 +187,7 @@ function postprocess(output, { scale, padLeft, padTop }) {
 		});
 	}
 
-	return nms(boxes).map((b) => ({
+	return filterTinyBoxes(nms(boxes)).map((b) => ({
 		// Falls back to the raw index rather than `undefined` if CLASS_NAMES is
 		// shorter than the model's class count - a visibly wrong label beats a
 		// silently missing one.
