@@ -104,25 +104,49 @@ auto-deploys).
 ### Keeping the demo warm
 
 Render's free tier spins a service down after 15 idle minutes, so a cold
-visitor waits ~50s. An external pinger (cron-job.org) hits `/` on both
-Render services every 10 minutes to keep them up.
+visitor waits ~50s. Two pieces keep this service up, and the split between
+them is the whole point:
 
-Two constraints shape that schedule, and both are easy to trip over:
+1. **A daily Claude routine at 09:50 Asia/Kathmandu *starts* it** — one
+   `curl --max-time 180` with retries, which sits through the full cold start.
+2. **cron-job.org *holds* it up** — `/` every 10 minutes, 10:00–20:00
+   Asia/Kathmandu.
+
+**A pinger cannot cold-start this service, only keep it warm.** cron-job.org
+caps its request timeout at 30s on the free plan, and the cold start takes
+~50s, so the first ping of the day always aborts the wake partway through.
+Render's router then refuses the retries — `x-render-routing:
+hibernate-rate-limited` (a 429 whose body is the plain string `Too Many
+Requests`) or `x-render-routing: no-deploy` (an HTML error page, which
+cron-job.org rejects as "output too large"). Neither error comes from this
+app; successful responses carry `x-render-origin-server: Render` and the
+failures don't. Once it starts, every ping that day fails and cron-job.org
+auto-disables the job after 26 consecutive failures. That took the demo down
+on 2026-08-08 and again on 2026-08-09, and the only reason it ever worked was
+that stray traffic happened to wake the service before 10:00.
+
+If the demo is cold some morning, check `x-render-routing` on a request before
+theorising — it names the cause directly.
+
+Three constraints shape all of this, and they are easy to trip over:
 
 - **Render allows 750 free instance-hours per month across the whole
-  workspace.** Keeping *two* services awake 24/7 costs ~1460 h — over quota,
-  which suspends them until the month resets. So the pings are restricted to
-  a ~10-hour daily window (≈610 h/month, plus spin-down tails). Widening the
-  window past ~12 hours puts the quota at risk.
+  workspace.** That is why the window is ~10 hours rather than 24/7: one
+  service awake around the clock is ~744 h, i.e. 99% of a quota whose penalty
+  is suspension until the month resets.
+- **Only the backend is kept warm.** `server-opencv`'s ping was deleted on
+  2026-08-09 — it is not in the live demo path (see the `SAMPLE_CLIP_URL`
+  comment in the frontend's `LiveStream.js`) and it was costing ~305 h/month
+  of that quota. It still responds if hit directly, just slowly.
 - **The pings must target `/`, which never touches Prisma.** Hitting a
   DB-backed route instead would wake Neon's compute on every ping and burn
   its 100 compute-hours/month.
 
-This used to be a GitHub Actions cron (`.github/workflows/keep-warm.yml`),
-which was removed: scheduled workflows on free public repos are heavily
-deprioritized (a `*/10` cron actually fired about hourly), and runs were
-intermittently cancelled with "The job was not acquired by Runner of type
-hosted" — a GitHub capacity failure with no workflow-side fix.
+Don't reach for GitHub Actions here — it was tried and removed
+(`.github/workflows/keep-warm.yml`). Scheduled workflows on free public repos
+are heavily deprioritized (a `*/10` cron actually fired about hourly), and
+runs were intermittently cancelled with "The job was not acquired by Runner of
+type hosted" — a GitHub capacity failure with no workflow-side fix.
 
 ## API
 
