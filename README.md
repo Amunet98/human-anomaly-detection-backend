@@ -131,9 +131,15 @@ theorising — it names the cause directly.
 Three constraints shape all of this, and they are easy to trip over:
 
 - **Render allows 750 free instance-hours per month across the whole
-  workspace.** That is why the window is ~10 hours rather than 24/7: one
-  service awake around the clock is ~744 h, i.e. 99% of a quota whose penalty
-  is suspension until the month resets.
+  workspace**, and the penalty for exceeding it is suspension until the month
+  resets. Keeping one service awake 24/7 is ~744 h — 99% of the quota — so
+  round-the-clock pinging is out. A ~10-hour window for the backend alone
+  projects to ~316 h/month, which leaves real room: **measured 81.72 / 750 h
+  on 2026-08-09, nine days into the month**, so the window could be widened to
+  ~16–18 h/day (~500–560 h) if the demo needs longer availability. Check the
+  live figure at https://dashboard.render.com/billing before widening — the
+  earlier ~610 h/month estimate in this file was guesswork and ran about 2x
+  high.
 - **Only the backend is kept warm.** `server-opencv`'s ping was deleted on
   2026-08-09 — it is not in the live demo path (see the `SAMPLE_CLIP_URL`
   comment in the frontend's `LiveStream.js`) and it was costing ~305 h/month
