@@ -101,58 +101,75 @@ string; Prisma 5.22's query engine doesn't recognise `channel_binding`.
 The production instance runs on Render (GitHub-connected — push to `main`
 auto-deploys).
 
-### Keeping the demo warm
+### Cold starts, and why there is no keep-warm
 
-Render's free tier spins a service down after 15 idle minutes, so a cold
-visitor waits ~50s. Two pieces keep this service up, and the split between
-them is the whole point:
+Render's free tier spins a service down after 15 idle minutes, so the first
+visitor of the day waits ~50s. **That is the accepted behaviour — there is
+deliberately nothing keeping this service warm.** The frontend already renders
+the uploaded image immediately, before the request resolves, precisely because
+the host may be spinning up, so the wait reads as loading rather than as a
+broken page.
 
-1. **A daily Claude routine at 09:50 Asia/Kathmandu *starts* it** — one
-   `curl --max-time 180` with retries, which sits through the full cold start.
-2. **cron-job.org *holds* it up** — `/` every 10 minutes, 10:00–20:00
-   Asia/Kathmandu.
+Keep-warm was tried and retired on 2026-08-10. The write-up below is what that
+cost to learn; the point of keeping it is that every alternative here has
+already been ruled out.
 
-**A pinger cannot cold-start this service, only keep it warm.** cron-job.org
+**A pinger can hold this service up but can never start it.** cron-job.org
 caps its request timeout at 30s on the free plan, and the cold start takes
-~50s, so the first ping of the day always aborts the wake partway through.
-Render's router then refuses the retries — `x-render-routing:
+~50s, so the first ping of the day always aborted the wake partway through.
+Render's router then refused the retries — `x-render-routing:
 hibernate-rate-limited` (a 429 whose body is the plain string `Too Many
 Requests`) or `x-render-routing: no-deploy` (an HTML error page, which
-cron-job.org rejects as "output too large"). Neither error comes from this
-app; successful responses carry `x-render-origin-server: Render` and the
-failures don't. Once it starts, every ping that day fails and cron-job.org
-auto-disables the job after 26 consecutive failures. That took the demo down
-on 2026-08-08 and again on 2026-08-09, and the only reason it ever worked was
-that stray traffic happened to wake the service before 10:00.
+cron-job.org rejects as "output too large"). Neither error came from this app;
+successful responses carry `x-render-origin-server: Render` and the failures
+don't. Once it began, every ping that day failed and cron-job.org auto-disabled
+the job after 26 consecutive failures — on 2026-08-08, 2026-08-09 and again on
+2026-08-10. It only ever appeared to work because stray traffic happened to
+wake the service before the window opened.
 
-If the demo is cold some morning, check `x-render-routing` on a request before
-theorising — it names the cause directly.
+Splitting the job in two didn't save it: a daily Claude routine at 09:50
+Asia/Kathmandu *could* cold-start the service with `curl --max-time 180`, but
+it only bought the ten hours cron-job.org was supposed to hold, and when the
+holding half auto-disabled again the wake was burning instance-hours for
+nothing. Both are now disabled.
 
-Three constraints shape all of this, and they are easy to trip over:
+**One earlier session blamed Cloudflare rate-limiting cron-job.org's shared
+egress IPs. That was wrong — don't revive it.** The stored failure bodies are
+plain Render router responses, and `x-render-routing` names the cause outright.
+Check it before theorising:
+
+```
+curl -sD - -o /dev/null --max-time 180 <url>/ | grep -i 'x-render\|http/'
+```
+
+cron-job.org's HISTORY view stores full failed response bodies and headers;
+that is where the answer was.
+
+Constraints worth knowing before reaching for any of this again:
 
 - **Render allows 750 free instance-hours per month across the whole
   workspace**, and the penalty for exceeding it is suspension until the month
   resets. Keeping one service awake 24/7 is ~744 h — 99% of the quota — so
-  round-the-clock pinging is out. A ~10-hour window for the backend alone
-  projects to ~316 h/month, which leaves real room: **measured 81.72 / 750 h
-  on 2026-08-09, nine days into the month**, so the window could be widened to
-  ~16–18 h/day (~500–560 h) if the demo needs longer availability. Check the
-  live figure at https://dashboard.render.com/billing before widening — the
-  earlier ~610 h/month estimate in this file was guesswork and ran about 2x
-  high.
-- **Only the backend is kept warm.** `server-opencv`'s ping was deleted on
+  round-the-clock pinging was never on the table. Measured **81.72 / 750 h on
+  2026-08-09**, nine days into the month; the live figure is at
+  https://dashboard.render.com/billing. (An earlier ~610 h/month estimate in
+  this file was guesswork and ran about 2x high.)
+- **`server-opencv` was never worth warming.** Its ping was deleted on
   2026-08-09 — it is not in the live demo path (see the `SAMPLE_CLIP_URL`
-  comment in the frontend's `LiveStream.js`) and it was costing ~305 h/month
-  of that quota. It still responds if hit directly, just slowly.
-- **The pings must target `/`, which never touches Prisma.** Hitting a
-  DB-backed route instead would wake Neon's compute on every ping and burn
-  its 100 compute-hours/month.
+  comment in the frontend's `LiveStream.js`) and it was costing ~305 h/month of
+  that quota. It still responds if hit directly, just cold.
+- **Any ping must target `/`, which never touches Prisma.** Hitting a DB-backed
+  route instead wakes Neon's compute on every request and burns its 100
+  compute-hours/month.
 
 Don't reach for GitHub Actions here — it was tried and removed
 (`.github/workflows/keep-warm.yml`). Scheduled workflows on free public repos
 are heavily deprioritized (a `*/10` cron actually fired about hourly), and
 runs were intermittently cancelled with "The job was not acquired by Runner of
 type hosted" — a GitHub capacity failure with no workflow-side fix.
+
+The real fix, if the demo ever needs to be instant, is a paid Render instance
+(no hibernation) — not another scheduler.
 
 ## API
 
