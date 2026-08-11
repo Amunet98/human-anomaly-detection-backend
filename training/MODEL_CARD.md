@@ -219,7 +219,7 @@ reader would assume, because the set could not yet fail.
 | | clean | perturbed |
 | --- | --- | --- |
 | accuracy | **11/13 (84.6%)** | **63/78 (80.8%)** |
-| macro-F1 | 0.841 | 0.841 |
+| macro-F1 | 0.878 | 0.841 |
 
 Per-class under perturbation: `fall` P=1.000 R=0.643, `sit` P=0.889 R=1.000,
 `stand` P=0.667 R=1.000. `squat` has **no fixture yet** and is excluded from

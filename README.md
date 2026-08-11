@@ -13,9 +13,21 @@ runs a self-hosted YOLOv8 ONNX model (`best.onnx`) against them, broadcasts
 detections to the [frontend](https://github.com/Amunet98/human-anomaly-detection-frontend)
 over a socket, and persists them to Postgres.
 
-Model provenance, class order, known failure modes and (once measured) accuracy
-live in [`training/MODEL_CARD.md`](training/MODEL_CARD.md). Worth reading before
-quoting any accuracy figure for this system — there isn't a measured one yet.
+Model provenance, class order, known failure modes and measured accuracy live
+in [`training/MODEL_CARD.md`](training/MODEL_CARD.md). Read it before quoting
+any accuracy figure for this system.
+
+The short version, measured 2026-08-12 via the frontend's `npm run eval:robust`:
+**84.6% clean (11/13), 80.8% perturbed (63/78)**, macro-F1 0.878 / 0.841, with
+`posture.js`'s thresholds calibrated over 3,106 detections from 4,924
+deduplicated images. Note `best.onnx` is **COCO-pretrained yolov8n-pose,
+unmodified** — posture comes from keypoint geometry, not from a trained
+classification head.
+
+**That 80.8% is not a deployment accuracy.** The fixture set was selected for
+cases the classifier was expected to get wrong, so it is adversarial rather
+than representative; reading it as a field figure would be wrong in both
+directions. The model card spells out why.
 
 ## How it fits together
 
