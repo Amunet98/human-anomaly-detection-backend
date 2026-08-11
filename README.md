@@ -24,6 +24,15 @@ deduplicated images. Note `best.onnx` is **COCO-pretrained yolov8n-pose,
 unmodified** — posture comes from keypoint geometry, not from a trained
 classification head.
 
+That was a decision, not a default. The first version *was* a trained
+classifier: yolov8n fine-tuned on an 8,340-image Roboflow dataset to predict
+`fall`/`sit`/`stand` directly. Evaluating it is what killed it — under
+perturbation it scored 76.7%, and its `sit` class had precision 0.545 against
+recall 1.000, the signature of a model keyed on scene appearance (bench, floor,
+indoor room) rather than body configuration. More data would not have fixed a
+shortcut that the task framing itself made available. See
+[`training/MODEL_CARD.md`](training/MODEL_CARD.md) for the full comparison.
+
 **That 80.8% is not a deployment accuracy.** The fixture set was selected for
 cases the classifier was expected to get wrong, so it is adversarial rather
 than representative; reading it as a field figure would be wrong in both
