@@ -247,12 +247,43 @@ that fragility is now visible instead of absent.
 Survival by perturbation: hflip 10/13, grayscale 10/13, dark-40% 11/13,
 blur-3px 11/13, downscale-320 10/13, crop-80% 11/13.
 
-**No `squat` fixture exists**, and the 2023 corpus cannot supply one: every image
-in it is an accident scene, so any frame containing a crouch also contains a
-person on the ground, and labelling such a frame `squat` would encode the wrong
-top-1 priority for an anomaly detector. The class is currently pinned by unit
-tests in `posture-check.mjs` built from real corpus keypoints, not by an eval
-fixture. Clean single-subject squat images have to come from outside this corpus.
+**No single-subject `squat` fixture exists**, so the class still has no top-1
+true positive and is excluded from macro-F1.
+
+The claim previously made here — that the corpus "cannot supply one: every image
+in it is an accident scene" — was too strong, and was checked on 2026-08-12
+rather than assumed. The corpus holds **168 images with a `squat` box, 11 of
+which are annotated `squat`-only**. Running all 11 through the pipeline is what
+settles it: none yields a clean single-subject squat. They are crowd scenes
+whose other subjects went unannotated, and in every case either the top-1 goes
+to a higher-confidence `sit` from an unlabelled bystander, or the pose model
+finds a fallen person the 2023 labels missed. So the conclusion holds — clean
+squats must come from outside this corpus — but for the more mundane reason that
+the labels are incomplete, not because such a frame cannot exist.
+
+**The class does now have eval coverage, via `expectedAll`.** Both croucher
+fixtures carry a correct tier-A `squat` that top-1 could never assert, because
+the fall correctly outranks it:
+
+| fixture | asserted squat | features |
+| --- | --- | --- |
+| `rail-fall-with-crouchers.jpg` | soldier, conf 0.62 | knee 78deg, hips 0.81 over ankles |
+| `street-fall-with-crouchers.jpg` | officer, conf 0.82 | knee 58deg, hips 0.56 over ankles |
+
+That is a genuine regression guard — delete the squat gate and both fixtures go
+red — but it is not a substitute for a single-subject fixture, because neither
+exercises the top-1 path and both would still pass if `squat` were only ever
+reachable behind a `fall`. The remaining unit-test coverage in
+`posture-check.mjs` is unchanged.
+
+**Vetting new fixtures.** `npm run fixture -- <image> --expect <class>` runs a
+candidate through the real pipeline and the same six perturbations the harness
+scores against, and refuses to stage anything that does not hold — including a
+`squat` candidate that lands below tier A, which would be testing the sit
+fallback rather than the squat gate. It exists because `lodge-group-a/b` were
+once downscaled to 960px and silently stopped reproducing the bug they guard: a
+fixture nobody verified is worse than no fixture, because the harness reports
+green either way.
 
 ### Calibration at scale (2026-08-12)
 
@@ -350,8 +381,13 @@ Grow the set to 15-20 images per class — deliberately including desk-webcam
 framing, which the tier-C limitation above predicts will be the weak spot —
 before quoting a figure anywhere load-bearing. The priorities now, in order:
 
-1. **A clean `squat` fixture from outside the 2023 corpus.** The class ships
-   with unit-test coverage and no eval coverage at all.
+1. **A clean single-subject `squat` fixture from outside the 2023 corpus.** The
+   class now has `expectedAll` coverage on the two croucher fixtures and unit
+   tests in `posture-check.mjs`, but still no top-1 true positive, so it stays
+   out of macro-F1. Shooting five or six is a half-hour job and needs no
+   licence clearance: a person crouching, full body in frame, ankles visible
+   (the gate is tier-A only), from a few heights. Vet each with
+   `npm run fixture` before adopting it.
 2. **`sit`**, which is data-poor everywhere: the entire 2023 corpus holds 120
    sit boxes against 4,765 fall boxes.
 3. **High-angle and overhead framing** for every class, which the recall
