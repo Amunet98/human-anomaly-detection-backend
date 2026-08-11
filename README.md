@@ -55,7 +55,7 @@ npm start
 |---|---|
 | `DATABASE_URL` | Postgres connection string |
 | `PORT` | defaults to `8081` locally; hosting platforms set this automatically |
-| `CLASS_NAMES` | comma-separated posture labels (default: `fall,sit,stand`). No longer `best.onnx`'s own class list — the model detects `person` + keypoints and posture is derived in `posture.js`. Must match `CLASS_NAMES` in the frontend's `constants.js` |
+| `CLASS_NAMES` | comma-separated posture labels (default: `fall,sit,squat,stand`). No longer `best.onnx`'s own class list — the model detects `person` + keypoints and posture is derived in `posture.js`. Must match `CLASS_NAMES` in the frontend's `constants.js`, and note `postprocess.js` keeps a separate frozen `LEGACY_CLASS_NAMES` for the archived 3-class weights — do not merge them |
 | `DETECTION_CONFIDENCE` | minimum confidence to report a detection (default `0.4`) |
 | `PRODUCER_TOKEN` | shared secret authenticating the server-opencv capture service — set the **same value** on both services; without it, incoming `data` frames are ignored |
 

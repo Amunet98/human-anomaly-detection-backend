@@ -15,7 +15,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: CLASS_NAMES
-        value: "fall,sit,stand"
+        value: "fall,sit,squat,stand"
       - key: DETECTION_CONFIDENCE
         value: "0.4"
       - key: PRODUCER_TOKEN

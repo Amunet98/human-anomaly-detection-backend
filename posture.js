@@ -84,6 +84,59 @@ const STAND_KNEE_ANGLE = 150;
 // high or low camera foreshortens thigh and shin together and cancels out.
 const SIT_THIGH_FORESHORTEN = 0.75;
 
+// The same ratio read from the other end. SIT_THIGH_FORESHORTEN catches a thigh
+// short relative to its shin; this catches a *shin* short relative to its thigh,
+// which means the shin points at the lens - the signature of kneeling or being
+// down on all fours. It was an unused half of an existing signal: the rule below
+// only ever tested the low side.
+//
+// Measured over 3,106 corpus detections, the separation is total: no `stand`
+// reaches 1.81 and no `sit` reaches 1.64, while 40 of 1,382 `fall` boxes clear
+// 2.5 (up to 12.3). 2.5 is therefore well clear of every upright posture rather
+// than fitted to the falls.
+//
+// Emitting `fall` for this is a deliberate choice and the weakest link in the
+// gate: kneeling is not falling. It is justified by where the cases came from -
+// people on all fours immediately after going down, which the torso angle misses
+// because their torso is still upright - and it is guarded downstream by
+// tracker.js's 1.2s sustain, which a deliberate kneel outlives but a stumble
+// does not. Three of 108 crouching-bystander boxes trip it; that is the measured
+// false-alarm cost.
+const KNEEL_SHIN_FORESHORTEN = 2.5;
+
+// --- squat ----------------------------------------------------------------
+//
+// Squat is a deep knee bend with the body folded down over the feet. It is
+// carved out of what the rules below would otherwise call `sit`, and all three
+// conditions must hold at once - each alone is far too broad.
+//
+// Measured medians across the corpus, which is what places these:
+//
+//            kneeAngle   hipAnkleDrop   stanceOffset
+//   squat        95           0.75          0.21
+//   sit         116           1.15          0.50
+//   stand       175           1.47          0.08
+//
+// The ordering squat < sit < stand holds on both leg features, which is the
+// whole basis for the class. Note `stand` also has a low stanceOffset - feet
+// under hips is true of standing too - so that feature cannot gate alone; it is
+// kneeAngle and hipAnkleDrop that exclude standing.
+const SQUAT_KNEE_ANGLE = 130; // squat median 95, stand p10 155
+const SQUAT_HIP_ANKLE_DROP = 1.0; // squat median 0.75, sit median 1.15
+const SQUAT_STANCE_OFFSET = 0.5; // squat p75 0.36, fall median 0.81
+
+// hipAnkleDrop also needs a *floor*, which is not symmetry for its own sake. The
+// feature is signed: negative means the ankles sit above the hips, which is not
+// a deep crouch but an inverted or sprawled body - someone on the ground with
+// their legs up. Without this bound the gate accepted them, and a fall relabelled
+// `squat` is a missed alarm rather than a cosmetic error.
+//
+// Found by running the gate over the corpus and reading the emitted reasons: a
+// detection came back `knee 128deg, hips -2.36 over ankles`. Measured, 0.3 drops
+// 42 such fall-to-squat leaks and costs 3 genuine crouches, and still sits below
+// the squat class's own p10 of 0.41.
+const SQUAT_HIP_ANKLE_DROP_MIN = 0.3;
+
 // Confidence multipliers by how much information was actually available.
 const TIER_FULL = 1.0; // hips + knees (+ ankles)
 const TIER_NO_ANKLE = 0.85; // hips + knees, knee angle unavailable
@@ -152,6 +205,8 @@ function postureFeatures(keypoints, box) {
     kneeDrop: null,
     kneeAngle: null,
     thighShinRatio: null,
+    hipAnkleDrop: null,
+    stanceOffset: null,
   };
 
   if (shoulder && hip) {
@@ -171,6 +226,17 @@ function postureFeatures(keypoints, box) {
     const thigh = Math.hypot(knee.x - hip.x, knee.y - hip.y);
     const shin = Math.hypot(ankle.x - knee.x, ankle.y - knee.y);
     if (shin > 0) f.thighShinRatio = thigh / shin;
+  }
+  // Squat features. Both need the ankle, which is what confines the squat class
+  // to tier A - see SQUAT_* below.
+  if (hip && ankle && f.torsoLength > 0) {
+    // How far below the hips the ankles sit, in torso lengths. A chair-sit puts
+    // a full vertical shin below the hip; a squat folds the body so the heels
+    // come up toward it.
+    f.hipAnkleDrop = (ankle.y - hip.y) / f.torsoLength;
+    // How far the ankles sit horizontally from the hips. A chair-sit projects
+    // the feet forward; a squat keeps them under the centre of mass.
+    f.stanceOffset = Math.abs(ankle.x - hip.x) / f.torsoLength;
   }
   return f;
 }
@@ -230,6 +296,51 @@ function classifyPosture(keypoints, box, personConf) {
     };
   }
 
+  // Shin foreshortened past anything an in-plane leg can produce: the subject is
+  // kneeling or on all fours. Checked before the squat gate because a kneel and
+  // a deep crouch share the leg geometry, and the kneel is the more alarming
+  // reading of the two - measured, taking it first costs nothing on the squat
+  // class (17 crouches read `fall` either way) and recovers 6 more falls than
+  // letting squat claim them.
+  if (f.thighShinRatio !== null && f.thighShinRatio >= KNEEL_SHIN_FORESHORTEN) {
+    return {
+      className: 'fall',
+      confidence: personConf * TIER_FULL * margin(f.thighShinRatio, KNEEL_SHIN_FORESHORTEN, 2),
+      tier: 'A',
+      reason: `shin ${(1 / f.thighShinRatio).toFixed(2)}x thigh (kneeling)`,
+    };
+  }
+
+  // Squat. Placed *before* the front-on sit gate, which is not cosmetic: a deep
+  // crouch foreshortens the thigh as well, so SIT_THIGH_FORESHORTEN claims 40%
+  // of crouches first if the order is reversed. Measured, moving this ahead of
+  // it takes the class from 27 to 51 caught at identical cost.
+  //
+  // All three features require the ankle, so this branch is unreachable without
+  // the full leg chain. That is the intended limitation, not an oversight: at
+  // tier B a squat and a chair-sit are geometrically identical, and the code
+  // below correctly answers `sit` there rather than guessing.
+  if (
+    f.kneeAngle !== null &&
+    f.hipAnkleDrop !== null &&
+    f.stanceOffset !== null &&
+    f.kneeAngle < SQUAT_KNEE_ANGLE &&
+    f.hipAnkleDrop >= SQUAT_HIP_ANKLE_DROP_MIN &&
+    f.hipAnkleDrop < SQUAT_HIP_ANKLE_DROP &&
+    f.stanceOffset < SQUAT_STANCE_OFFSET
+  ) {
+    return {
+      className: 'squat',
+      confidence:
+        personConf *
+        TIER_FULL *
+        leanPenalty *
+        margin(f.hipAnkleDrop, SQUAT_HIP_ANKLE_DROP, 0.5),
+      tier: 'A',
+      reason: `knee ${f.kneeAngle.toFixed(0)}deg, hips ${f.hipAnkleDrop.toFixed(2)} over ankles`,
+    };
+  }
+
   // A foreshortened thigh is treated as decisive rather than as one vote among
   // three, because it is a statement about projection geometry rather than a
   // correlation: no standing pose puts a thigh at 0.58 of its own shin. Left as
@@ -267,6 +378,11 @@ function classifyPosture(keypoints, box, personConf) {
   // Tier A - full leg chain. Two independent signals; agreement is the common
   // case, and disagreement falls back to kneeDrop, which does not depend on the
   // ankle being correctly placed.
+  //
+  // The fallback was re-tested against the corpus rather than left on intuition:
+  // they disagree on 527 of 3,106 detections, and deferring to kneeAngle instead
+  // trades 25 correct `stand` calls for 3 correct `sit` calls with no change to
+  // fall recall. kneeDrop stays.
   const angleSaysSit = f.kneeAngle < STAND_KNEE_ANGLE;
   const agree = dropSaysSit === angleSaysSit;
   return {

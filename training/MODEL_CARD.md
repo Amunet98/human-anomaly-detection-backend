@@ -16,7 +16,7 @@ that motivated replacing it.
 | --- | --- |
 | Architecture | YOLOv8n-pose (nano), COCO-pretrained, **unmodified** — no fine-tuning |
 | Task | Person detection + 17 COCO keypoints |
-| Model classes | 1 (`person`). The three postures are **not** model outputs |
+| Model classes | 1 (`person`). The four postures are **not** model outputs |
 | Posture | Derived from geometry in `posture.js` / `frontend-new/src/lib/detect/posture.js` |
 | Input | `images`, float32 `[1, 3, 640, 640]`, RGB CHW, `/255`, letterboxed with grey `rgb(114,114,114)` |
 | Output | `output0`, `[1, 56, 8400]`, channel-major = 4 box + 1 person-conf + 17x3 keypoints, **no NMS** |
@@ -31,7 +31,14 @@ moved.
 
 `CLASS_NAMES` in `render.yaml` / `.env` / `constants.js` is now the *posture*
 vocabulary rather than the model's class list. It still has to agree across all
-three, because `posture.js` emits exactly those three strings.
+three, because `posture.js` emits exactly those strings — four of them since
+2026-08-12, when `squat` was added.
+
+One trap that comes with that: `postprocess.js`'s `decodeYolov8`, kept only so
+`eval-check.mjs` can still score the archived 3-class weights, indexes a class
+list by the old model's head order. `squat` entered `CLASS_NAMES` at index 2,
+which is where those weights emit `stand`. It therefore has its own frozen
+`LEGACY_CLASS_NAMES` and must not be pointed back at `CLASS_NAMES`.
 
 ## Why the architecture changed
 
@@ -87,11 +94,47 @@ below confidence 0.5 counts as missing.
 | `kneeDrop` | `(kneeY - hipY)` over torso length. Large = hips well above knees |
 | `kneeAngle` | interior angle at the knee |
 | `thighShinRatio` | projected thigh length over projected shin length |
+| `hipAnkleDrop` | `(ankleY - hipY)` over torso length. **Signed** - negative means ankles above hips |
+| `stanceOffset` | horizontal hip-to-ankle distance over torso length |
 | `aspect` | box w/h, tiebreak only, never a gate |
 
-Order: `torsoAngle >= 50` (or `aspect >= 1.5` with `torsoAngle >= 30`, covering a
-body lying toward the lens) is a **fall**; else `thighShinRatio < 0.75` is a
-**sit**; else `kneeDrop < 0.5` / `kneeAngle < 150` is a **sit**; else **stand**.
+Order:
+
+1. `torsoAngle >= 50` (or `aspect >= 1.5` with `torsoAngle >= 30`, covering a
+   body lying toward the lens) is a **fall**
+2. `thighShinRatio >= 2.5` is a **fall** - the shin points at the lens, i.e.
+   kneeling or on all fours
+3. `kneeAngle < 130` **and** `0.3 <= hipAnkleDrop < 1.0` **and**
+   `stanceOffset < 0.5` is a **squat**
+4. `thighShinRatio < 0.75` is a **sit**
+5. `kneeDrop < 0.5` / `kneeAngle < 150` is a **sit**
+6. else **stand**
+
+Steps 2 and 3 were added 2026-08-12 and are calibrated against 3,106 measured
+detections rather than the fixture set - see "Calibration at scale" below.
+
+### Why squat sits where it does in the order
+
+Ahead of the thigh gate, not after it. A deep crouch foreshortens the thigh too,
+so `thighShinRatio < 0.75` claims 40% of crouches first if the order is reversed;
+measured, moving squat ahead of it takes the class from 27 to 51 caught at
+identical cost to the other three.
+
+Behind the kneeling gate, not ahead of it. A kneel and a deep crouch share the
+leg geometry, and the kneel is the more alarming reading - taking it first costs
+nothing on the squat class (17 crouches read `fall` either way) and recovers 6
+more falls.
+
+`hipAnkleDrop` needs the ankle, so **squat is a tier-A-only class**. At tier B a
+squat and a chair-sit are geometrically identical and the classifier answers
+`sit`. That is deliberate, and it is the same honesty as the tier-C note below.
+
+The **floor** on `hipAnkleDrop` is not symmetry for its own sake. The feature is
+signed: negative means the ankles sit above the hips, which is a sprawled or
+inverted body rather than a crouch. Without it the gate accepted them - found in
+the wild on a corpus image returning `knee 128deg, hips -2.36 over ankles`. A
+fall relabelled `squat` is a missed alarm, so 0.3 buys 42 fewer such leaks for
+3 genuine crouches, and still sits below the squat class's own p10 of 0.41.
 
 ### Why thigh foreshortening is a separate rule
 
@@ -167,25 +210,119 @@ full-body read of the same person.
 
 From `frontend-new/scripts/eval-check.mjs` (`npm run eval:robust`), against the
 labelled fixture set in `frontend-new/scripts/eval-fixtures/`. Measured
-2026-08-08.
+2026-08-12.
+
+**Superseded 2026-08-12.** The fixture set grew from 8 to 13 and the numbers
+below replace the previous 8/8 and 48/48. Both were real; neither meant what a
+reader would assume, because the set could not yet fail.
 
 | | clean | perturbed |
 | --- | --- | --- |
-| accuracy | **8/8 (100%)** | **48/48 (100%)** |
-| macro-F1 | 1.000 | 1.000 |
+| accuracy | **11/13 (84.6%)** | **63/78 (80.8%)** |
+| macro-F1 | 0.841 | 0.841 |
 
-Per-class, under perturbation: `fall` P=1.000 R=1.000, `sit` P=1.000 R=1.000,
-`stand` P=1.000 R=1.000. Survival is 5/5 for every one of the six perturbations
-individually.
+Per-class under perturbation: `fall` P=1.000 R=0.643, `sit` P=0.889 R=1.000,
+`stand` P=0.667 R=1.000. `squat` has **no fixture yet** and is excluded from
+macro-F1 - see the note on it below.
 
-**Read this with the caveat it deserves.** The fixture set is eight images. A
-perfect score on eight images through six perturbations is 48 trials, not 48
-independent samples, and it does not mean the system is perfect — it means the
-fixture set no longer discriminates and has to grow before it can say anything
-more. What the number does support is the *comparison*: the same trials that
-the old model failed 7 of, this one passes, and the failures it fixed were the
-systematic kind (every `stand` collapsing to `sit` under blur) rather than
-scattered noise.
+The accuracy fell because the set gained cases it fails, which is the point. Two
+of the five new fixtures are labelled KNOWN GAP and are expected to fail; they
+account for 12 of the 15 missed fall trials. The remaining 3 are
+`court-fall-overhead.jpg` flipping to `sit` under hflip, grayscale and
+downscale - the kneeling gate holds it on the clean image but only just, and
+that fragility is now visible instead of absent.
+
+Survival by perturbation: hflip 10/13, grayscale 10/13, dark-40% 11/13,
+blur-3px 11/13, downscale-320 10/13, crop-80% 11/13.
+
+**No `squat` fixture exists**, and the 2023 corpus cannot supply one: every image
+in it is an accident scene, so any frame containing a crouch also contains a
+person on the ground, and labelling such a frame `squat` would encode the wrong
+top-1 priority for an anomaly detector. The class is currently pinned by unit
+tests in `posture-check.mjs` built from real corpus keypoints, not by an eval
+fixture. Clean single-subject squat images have to come from outside this corpus.
+
+### Calibration at scale (2026-08-12)
+
+The thresholds above were originally justified by five to eight measured values.
+They have now been replayed over **3,106 detections** from 4,924 deduplicated
+images of the 2023 project's Roboflow corpus, staged by
+`frontend-new/scripts/calibration/build-corpus.py` into an unversioned
+`corpus-2023/` beside the repos, measured by
+`frontend-new/scripts/feature-dump.mjs`, and analysed by the two scripts beside
+the builder. The corpus itself is ~250 MB and deliberately not committed; the
+scripts that regenerate it are.
+
+The existing gates hold. Fraction of each class falling below each threshold:
+
+| gate | stand | fall | sit | squat |
+| --- | --- | --- | --- | --- |
+| `kneeDrop < 0.5` | **3.7%** | 78.3% | 67.5% | 64.6% |
+| `kneeAngle < 150` | **7.6%** | 66.5% | 69.5% | 71.3% |
+| `thighShinRatio < 0.75` | **2.3%** | 34.0% | 33.9% | 40.7% |
+
+That is the result worth keeping: three thresholds calibrated on a handful of
+images survive 400x more data essentially unchanged.
+
+But it also shows what they do **not** do. Those gates separate `stand` from
+not-`stand`. They do not separate fall from sit from squat - on
+`thighShinRatio` the three medians are 0.89 / 0.87 / 0.90, and on `kneeAngle`
+129 / 116 / 95. That is the mechanism behind the recall figure below.
+
+Medians used to place the squat gate:
+
+| | kneeAngle | hipAnkleDrop | stanceOffset |
+| --- | --- | --- | --- |
+| squat | 95 | 0.75 | 0.21 |
+| sit | 116 | 1.15 | 0.50 |
+| stand | 175 | 1.47 | 0.08 |
+
+Note `stand` also has a low `stanceOffset` - feet under hips is true of standing
+too - so that feature cannot gate alone. `kneeAngle` and `hipAnkleDrop` are what
+exclude standing.
+
+The **disagreement fallback was re-tested and kept**. When `kneeDrop` and
+`kneeAngle` conflict (527 of 3,106 detections) the code defers to `kneeDrop`;
+deferring to `kneeAngle` instead trades 25 correct `stand` calls for 3 correct
+`sit` calls with no change to fall recall. It stays as it was.
+
+### Fall recall against the 2023 corpus
+
+Of 1,970 detections overlapping a 2023 `fall` box, the classifier called 731 a
+fall after the kneeling gate (706 before it). **Do not read that as 36%
+accuracy.** The corpus labels are box-level annotations made for a detector, its
+`fall` class marks "person is down" including seated-on-the-ground, and its
+`squat` class is crouching bystanders. The structure of the misses is the
+trustworthy part:
+
+| share of misses | bucket |
+| --- | --- |
+| 38% | torso upright, knees high - reads as seated |
+| 16% | tier D, no torso vector |
+| 16% | torso 30-50deg, below the fall gate |
+| 10% | tier C, no knees |
+| 10% | torso upright, legs extended - reads as standing |
+| 5% | kneeDrop/kneeAngle disagree |
+| 2% | shin foreshortened - now caught by the kneeling gate |
+
+The dominant cause is **camera elevation**. When the camera looks down, a person
+lying on the floor projects to nearly the same 2D skeleton as an upright person
+seen from the front, because `torsoAngle` measures rotation *in* the image plane
+and cannot see rotation *toward* it. The previous fixture set was almost entirely
+eye-level and side-on, which is why none of this was visible. It matters because
+CCTV is mounted high.
+
+**Read this with the caveat it deserves.** Thirteen images through six
+perturbations is 78 trials, not 78 independent samples. The set is still far too
+small to quote anywhere load-bearing, and it is now deliberately unbalanced
+toward hard cases: five of the thirteen came from the 2023 corpus specifically
+because they were failure candidates. An 80.8% measured on a set selected that
+way is not comparable to 80.8% on a representative sample, and reading it as a
+deployment accuracy would be wrong in both directions.
+
+What it is good for is regression detection, which the previous set had stopped
+providing. At 8/8 and 48/48 the harness could not tell the current system from a
+better or a worse one; it can now.
 
 The harness now also runs two **pass/fail** checks that top-1 accuracy cannot
 express: `expectedAll` verifies every person in a multi-subject frame, and
@@ -199,7 +336,15 @@ off the boundary and made them stop reproducing the bug entirely.
 
 Grow the set to 15-20 images per class — deliberately including desk-webcam
 framing, which the tier-C limitation above predicts will be the weak spot —
-before quoting a figure anywhere load-bearing.
+before quoting a figure anywhere load-bearing. The priorities now, in order:
+
+1. **A clean `squat` fixture from outside the 2023 corpus.** The class ships
+   with unit-test coverage and no eval coverage at all.
+2. **`sit`**, which is data-poor everywhere: the entire 2023 corpus holds 120
+   sit boxes against 4,765 fall boxes.
+3. **High-angle and overhead framing** for every class, which the recall
+   analysis above identifies as the systematic weak spot and which the original
+   eight fixtures did not contain a single example of.
 
 What this measurement does **not** cover, unchanged from before: box
 localisation quality, multi-person scenes scored per-person rather than top-1,
@@ -279,6 +424,33 @@ Also expected:
 - A fall directly toward or away from the lens foreshortens the torso, so
   `torsoAngle` understates it. The `aspect >= 1.5` clause exists for that case,
   but a fall that is *both* foreshortened and narrow-boxed will still be missed.
+  **This was confirmed, not merely predicted** (2026-08-12): fixture
+  `prone-fall-view-axis.jpg` is a man face-down on a floor returning `stand` at
+  0.70, with `torsoAngle` 2.5deg, `kneeDrop` 1.14, `kneeAngle` 168deg and
+  `thighShinRatio` 1.29 — every feature reading as a standing person, and a box
+  aspect of 0.45 that misses the escape hatch. It is kept as a deliberately
+  failing fixture. Nothing in `posture.js` fixes it: two-dimensional keypoints
+  do not carry rotation toward the image plane, which puts it in the same
+  category as tier C. Resolving it needs a signal geometry does not have —
+  the transition into the pose, or a scene/ground reference.
+- **Camera elevation is the systematic version of the above**, and against the
+  2023 corpus it is the single largest source of missed falls. A high-mounted
+  camera projects a person on the floor into nearly the same skeleton as an
+  upright person seen from the front. CCTV is mounted high, so this is a
+  deployment-domain problem rather than a corner case.
+- **The fallen subject is sometimes not detected at all.** Fixture
+  `bus-fall-obscured.jpg` has three people crouched over a person on the ground;
+  the pose model returns the crouchers and the bystanders and never the subject.
+  That is a detection miss upstream of posture, and no geometry change reaches
+  it. Kept as a second failing fixture precisely to keep it distinguishable from
+  the view-axis case.
+- **The kneeling gate is marginal on real imagery.** `thighShinRatio >= 2.5`
+  recovers `court-fall-overhead.jpg` on the clean image, but that fixture still
+  flips to `sit` under hflip, grayscale and downscale-320. The gate is a genuine
+  improvement, not a solved case.
+- **`squat` is tier-A only and has no eval fixture.** A waist-up crouch returns
+  `sit`, by construction. The class is pinned by unit tests built from real
+  corpus keypoints and by nothing else.
 - Overlapping people are only separated as well as NMS at IoU 0.45 allows. The
   pose model does detect far more people per frame than the old one, so this
   path now gets exercised where before it did not.
@@ -303,19 +475,28 @@ Android before being quoted anywhere.
 
 In order of expected value per unit of effort:
 
-1. **Grow the fixture set** (`frontend-new/scripts/eval-fixtures/`). At five
-   images the harness can no longer tell the current system apart from a better
-   one. Prioritise desk-webcam framing, which the tier-C limitation predicts is
-   the weak spot, and multi-person frames.
-2. **Tune the geometric boundaries against that set**, with `npm run posture` as
-   the guard. The thresholds in `posture.js` are calibrated to wide measured
-   gaps, not fitted — there is room, but no evidence yet on which direction.
-3. **Solve tier C properly** if desk framing matters. Geometry alone cannot;
+1. **Grow the fixture set** (`frontend-new/scripts/eval-fixtures/`). Thirteen
+   images is still far too few, and the set has no `squat` at all. Priorities
+   are listed at the end of the accuracy section: a clean squat from outside the
+   2023 corpus, more `sit`, and high-angle framing for everything.
+2. **Attack camera elevation**, now identified as the largest systematic source
+   of missed falls. Geometry alone cannot solve it — `torsoAngle` measures
+   rotation in the image plane and a fall toward the lens is rotation out of it.
+   The tractable routes are temporal (the *transition* into the pose is visible
+   even when the pose is not) or a homography/ground-plane reference if the
+   camera is fixed, which for CCTV it is.
+3. **Tune the geometric boundaries**, with `npm run posture` as the guard. This
+   moved down the list: the boundaries have now been replayed over 3,106
+   detections and the existing ones hold. The evidence says the gates are not
+   where the remaining error is.
+4. **Solve tier C properly** if desk framing matters. Geometry alone cannot;
    it needs the transition into the pose (temporal) or scene context.
-4. **Only then consider yolov8s-pose.** Roughly doubles inference cost, which
+5. **Only then consider yolov8s-pose.** Roughly doubles inference cost, which
    the 512 MB host cannot absorb — though it matters much less now that the
-   browser can carry the live path. Keypoint localisation is not currently the
-   bottleneck, so expect little.
+   browser can carry the live path. Keypoint localisation is *mostly* not the
+   bottleneck — though `bus-fall-obscured.jpg` is a case where it is, the
+   fallen subject going undetected entirely, so a larger backbone is no longer
+   a pure no-op here.
 
 Fine-tuning the pose model is deliberately *not* on this list. It is COCO
 weights doing a task COCO covers well; the value is in the geometry layer and

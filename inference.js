@@ -24,7 +24,7 @@ const INPUT_SIZE = 640;
 // the three postures derived from keypoint geometry in posture.js. Kept as an
 // env var because render.yaml and the Render dashboard still set it and the
 // browser's constants.js restates the same three names.
-const CLASS_NAMES = (process.env.CLASS_NAMES || 'fall,sit,stand')
+const CLASS_NAMES = (process.env.CLASS_NAMES || 'fall,sit,squat,stand')
 	.split(',')
 	.map((s) => s.trim());
 
