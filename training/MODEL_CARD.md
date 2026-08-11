@@ -205,6 +205,18 @@ full-body read of the same person.
 > close-range laptop-webcam framing this demo runs in, which is the same
 > domain-gap concern flagged for the old model below. Resolving it needs a signal
 > geometry does not carry — scene context, or the transition into the pose.
+>
+> **The UI now discloses this rather than hiding it.** `readout.js`'s
+> `postureReadout` renders tier C as a grey `LEGS HIDDEN` and tier D as `NO READ`
+> instead of a confident green `STAND n%`, and the live view coaches the viewer
+> to step back once the top track holds an indeterminate tier for 1.5 s. The
+> classifier is unchanged — it still emits `stand`, because the tracker needs a
+> class to vote on and the tier discount already caps its weight. Only the
+> presentation moved. Note this fires more often than it might appear it should:
+> `balcony-stand.jpg`, an eval fixture whose expected label is `stand` and which
+> passes, is itself tier C, so the demo hedges on it. That is correct — his knees
+> are behind a railing — but it means a viewer will meet `LEGS HIDDEN` on images
+> that look unambiguous to a human. Pinned by `npm run posture`.
 
 ## Measured accuracy — top-1 posture
 
