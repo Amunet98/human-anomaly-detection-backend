@@ -131,3 +131,6 @@ dist
 *.zip
 *.tar.gz
 .prisma/
+
+# Trained locally from corpus keypoints; regenerate with training/train_posture_keypoints.py
+training/posture_keypoints.onnx
