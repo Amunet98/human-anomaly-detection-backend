@@ -815,7 +815,31 @@ improved most and leaves the two that did not:
   rather than a confident green `STAND`. That is the honesty fix working on real
   hardware, in the framing most visitors will actually hit. Still one device and
   one observer, so it carries the same caveat as everything else here.
-- **The false-alarm path**, which remains the open one. A crouch in full frame should read `fall` - that is
+- **A full-frame crouch reads `squat`, not `fall`** - confirmed on the device at
+  52% confidence, browser engine, tracked as `#3`. This was the prediction most
+  likely to be wrong: crouching is two-thirds of the 11.5% false-alarm rate, so
+  a `fall` was the expected reading and the tracker's sustain was expected to be
+  what suppressed it. It never had to.
+
+  Read it as the good case working, not as a revision of the 11.5%. The subject
+  was in the squat gate's sweet spot - torso upright, hips low but above the
+  ankles, feet under the centre of mass, so `hipAnkleDrop` sat comfortably inside
+  the 0.3-1.0 window. The POLAR crouches that read `fall` are the ones that lean
+  forward or clear that ceiling. One clean squat passing moves nothing.
+
+- **The browser engine runs real-time on a phone**, which the latency table above
+  still lists as "not measured". Not a number - no frame timing was recorded -
+  but onnxruntime-web is evidently viable on mid-range Android rather than
+  merely theoretically supported.
+
+- Worth noting for its own sake: the pose model tracked shoulders, hips, knees
+  and ankles correctly **through a mirror, in a dim bedroom, at an angle**. No
+  fixture in the set covers any of those conditions.
+
+- **The false-alarm path**, which remains the open one. Provoking it needs a
+  crouch with the torso leaned well forward - reaching for something on the
+  floor - which pushes `torsoAngle` toward the 50deg gate. Whether FALL CONFIRMED
+  then appears, or whether `FALL_CONFIRM_MS` eats it, is still unestablished. A crouch in full frame should read `fall` - that is
   the 11.5% measured under "False-alarm rate" - and whether `tracker.js`'s 1.2s
   sustain actually suppresses it before the FALL CONFIRMED badge appears is the
   single most useful thing a next test could establish. It is the only claim in
