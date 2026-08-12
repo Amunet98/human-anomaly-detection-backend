@@ -787,6 +787,40 @@ Only the first row is measured. The browser figures need a real pass on desktop
 Chrome (WebGPU), desktop Firefox (WASM — no WebGPU in stable) and a mid-range
 Android before being quoted anywhere.
 
+## Device smoke test (2026-08-12)
+
+The first time any of this was run against a real camera rather than a still
+image. Recorded because "untested on a device" and "smoke-tested once" are
+different states, and the difference is annoying to reconstruct later.
+
+**Setup:** the live demo in a phone browser, subject standing back far enough to
+read the screen in a mirror. **Result:** the owner reports it working
+"far better than yesterday", i.e. than the same demo before the inverted and
+wide-box gates.
+
+**This is a smoke test, not QA.** One device, one browser, one person, one
+lighting condition, no matrix, and no recorded output to re-examine. It is
+evidence the system is not broken on real hardware. It is not evidence of an
+accuracy figure, and nothing here should be quoted as one.
+
+**What that setup does and does not exercise.** Standing back to see a mirror
+puts the whole body in frame, which is **tier A** - precisely where the day's
+changes land, since the inverted gate, the wide-box gate and the recovered falls
+all need the full leg chain or a horizontal torso. So it tests the case that
+improved most and leaves the two that did not:
+
+- **Tier C**, the close-range waist-up framing a phone at arm's length or a
+  laptop webcam produces. Behaviour there is the `LEGS HIDDEN` readout rather
+  than an accuracy change, and it remains unconfirmed on a device.
+- **The false-alarm path.** A crouch in full frame should read `fall` - that is
+  the 11.5% measured under "False-alarm rate" - and whether `tracker.js`'s 1.2s
+  sustain actually suppresses it before the FALL CONFIRMED badge appears is the
+  single most useful thing a next test could establish. It is the only claim in
+  this document resting on the tracker rather than on measurement.
+
+Still open: the perturbation matrix across browsers, the latency table above, and
+the post-tracker false-alarm rate.
+
 ## A trained keypoint classifier was tried and is NOT shipped (2026-08-12)
 
 `training/train_posture_keypoints.py` trains a classifier on the 17 joint
