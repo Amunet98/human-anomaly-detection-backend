@@ -282,8 +282,8 @@ Per-class under perturbation: `fall` P=1.000 R=0.750, `sit` P=1.000 R=1.000,
 `stand` P=0.750 R=1.000, `squat` P=0.769 R=0.833.
 
 `squat`'s R=0.833 is the most misleading figure in this table: measured against
-the corpus its recall is **48.1%**. See "`squat` is precise and low-recall on
-purpose" below.
+the corpus its true recall is **44.3%** and its precision on labelled rows is
+**35.1%**. See "`squat` is low-recall AND low-precision" below.
 
 **macro-F1 now spans all four classes**, where every previous figure in this
 document spanned three. 0.859 is therefore *not* a regression from 0.905 - it is
@@ -316,46 +316,70 @@ view is also what pins the *gate ordering* - its thigh ratio is far under
 > **Do not read that R=0.833 as the class's recall.** All four fixtures are one
 > person doing textbook gym squats in even light, so they measure the easy
 > centre of the distribution rather than the class. **Measured against the
-> corpus, the gate catches 51 of 106 tier-A ground-truth squats - 48.1%.** The
-> fixture figure is flattering by roughly 35 points and exists to catch
-> regressions, not to describe field behaviour.
+> corpus it predicts `squat` for 47 of 106 tier-A ground-truth squats - 44.3%,
+> at 35.1% precision.** The fixture figure is flattering by roughly 39 points and
+> exists to catch regressions, not to describe field behaviour.
 
-### `squat` is precise and low-recall on purpose
+### `squat` is low-recall AND low-precision
 
-The 48.1% is not a tuning failure with a better setting waiting to be found. It
-is the price of not leaking falls, and the sweep that establishes this is worth
-keeping because the number invites re-tuning:
+**Corrected 2026-08-12, same day, after re-running `feature-dump.mjs` end to
+end.** The first version of this section said the class was *precise* and that
+widening its gate cost fall recall at roughly 9:1. Both halves were wrong, and
+the reasoning error is worth preserving because it is easy to repeat.
 
-| kneeAngle | ceiling | stance | squats caught | **falls captured** |
+Measured end to end over the corpus, on the 106 tier-A ground-truth squats:
+
+| | |
+| --- | --- |
+| satisfy the squat conditions | 51/106 = 48.1% |
+| **actually predicted `squat`** | **47/106 = 44.3%** |
+| satisfied but claimed earlier | 4, all by fall gates |
+
+So true recall is 44.3%, not the 48.1% that reading the thresholds alone
+suggests - the fall gates take 4 of them first, correctly.
+
+**Precision is the worse number.** Of 327 detections predicted `squat`, 134
+carry a ground-truth label: 47 are squats, **78 are falls**, 7 stand, 2 sit.
+That is **35.1% precision on labelled rows** - the class is wrong more often
+than it is right, and its dominant error is calling a fall a crouch. (Read with
+the caveat that 193 of the 327 are unlabelled, and the 2023 annotators labelled
+accident participants rather than every person, so the labelled subset is
+biased toward the dramatic.)
+
+**Why "9 falls per squat" was wrong.** The squat gate is **step 4** - it runs
+after all three fall gates. A detection that reaches it is one the fall gates
+already declined, so widening it *cannot* take a correctly-detected fall.
+Verified rather than assumed: 77 detections currently predicted `fall` satisfy
+the current squat conditions and stay `fall`, because ordering wins. The earlier
+sweep counted "ground-truth falls whose geometry satisfies the squat
+conditions" and silently treated them as losable. They were not losable; most
+were already being missed as `sit`.
+
+The real cost of widening, counting only rows the fall gates did not claim:
+
+| widened to | rows moved | genuinely squat | already-missed falls (sit->squat) | real sit/stand broken |
 | --- | --- | --- | --- | --- |
-| **130** | **1.0** | **0.5** | **48.1%** | **8.4%** |
-| 130 | 1.2 | 0.5 | 53.8% | 9.4% |
-| 150 | 1.2 | 0.5 | 55.7% | 10.7% |
-| 150 | 1.5 | 0.7 | 62.3% | 17.6% |
-| none | none | none | 95.3% | 56.7% |
+| 130 / 1.2 / 0.5 | 48 | 4 | 4 | 7 |
+| 150 / 1.2 / 0.5 | 113 | 6 | 19 | 14 |
+| 150 / 1.5 / 0.7 | 322 | 12 | 73 | 38 |
 
-Measured over the tier-A pools: 106 ground-truth squats, 1,335 falls, 59 sits.
-"Falls captured" is the share of ground-truth falls whose geometry satisfies the
-squat conditions - an upper bound on leakage, since the fall gates in steps 1-3
-run first and claim many of them before the squat gate is reached.
+**The recommendation survives the correction, for a different reason.** Widening
+costs roughly three correct `sit`/`stand` calls per genuine squat gained, and
+buys nothing in alarm behaviour - the falls it absorbs were already missed, so
+they merely change which wrong label they carry. `SQUAT_HIP_ANKLE_DROP` stays at
+1.0.
 
-Going from 48% to 62% costs about **nine falls misread as `squat` for every
-extra squat gained**, and a fall relabelled `squat` is a missed alarm. There is
-no setting on this curve where the trade is worth taking.
+The cause is the one already recorded under "Calibration at scale": these
+features separate `stand` from not-`stand` and do not separate fall from sit
+from squat. Medians for fall / sit / squat are 0.89 / 0.87 / 0.90 on
+`thighShinRatio` and 129 / 116 / 95 on `kneeAngle`. **A person crouching and a
+person down on the ground are not distinguishable here.**
 
-The cause is the same one recorded under "Calibration at scale": these features
-separate `stand` from not-`stand` and do not separate fall from sit from squat.
-Medians for fall / sit / squat are 0.89 / 0.87 / 0.90 on `thighShinRatio` and
-129 / 116 / 95 on `kneeAngle`. **A person crouching and a person down on the
-ground are not distinguishable here.** The squat gate works by carving out a
-narrow, safe corner of that overlap - which is exactly why it is precise, and
-exactly why it only reaches half the class.
-
-The honest one-line description of the class is therefore: *`squat` fires only
-on the clearest crouches and lets the rest fall through to `sit`, deliberately,
-because widening it costs fall recall at roughly 9:1.* Resolving it properly
-needs a signal these three features do not carry - the same conclusion tier C
-and the view-axis fall arrive at.
+The honest one-line description is therefore: *`squat` catches under half the
+crouches and is wrong most of the times it fires, but it costs nothing in fall
+recall, because it only ever relabels detections the fall gates already
+declined.* Treat a `squat` output as "not standing, probably low" rather than as
+a reliable class.
 
 The claim previously made here — that the corpus "cannot supply one: every image
 in it is an accident scene" — was too strong, and was checked on 2026-08-12
@@ -438,9 +462,21 @@ deferring to `kneeAngle` instead trades 25 correct `stand` calls for 3 correct
 
 ### Fall recall against the 2023 corpus
 
-Of 1,970 detections overlapping a 2023 `fall` box, the classifier called 731 a
-fall after the kneeling gate (706 before it). **Do not read that as 36%
-accuracy.** The corpus labels are box-level annotations made for a detector, its
+Of 1,970 detections overlapping a 2023 `fall` box, the classifier now calls
+**976 a fall - 49.5%**, re-measured end to end on 2026-08-12 after the inverted
+and wide-box gates. The same dump before those gates (and before the kneeling
+and squat gates) called 705, so recall went **35.8% -> 49.5%, +271 detections,
+with zero regressions**: not one detection that was already correctly called
+`fall` moved to anything else. The 271 came from `sit` (266) and `stand` (5) -
+that is, from exactly the two labels this section identifies as absorbing missed
+falls.
+
+A related check, since `squat` was added the same day and absorbs 78
+ground-truth falls: every one of those 78 was already wrong before, predicted
+`sit` (68) or `stand` (10). The squat gate moved them between two non-alarming
+labels and cost no alarms.
+
+**Do not read 49.5% as accuracy.** The corpus labels are box-level annotations made for a detector, its
 `fall` class marks "person is down" including seated-on-the-ground, and its
 `squat` class is crouching bystanders. The structure of the misses is the
 trustworthy part:
@@ -493,7 +529,7 @@ before quoting a figure anywhere load-bearing. The priorities now, in order:
    viewpoint rather than population; a second subject, a different body type and
    a non-gym setting would say much more than a fifth angle of this one. What
    they will do is make the fixture figure *honest* rather than raise it. The
-   48.1% corpus recall is a property of the feature space, not of the fixture
+   44.3% corpus recall is a property of the feature space, not of the fixture
    set, and no amount of fixtures changes it - see "`squat` is precise and
    low-recall on purpose". Vet each with `npm run fixture` before adopting it.
 2. **`sit`**, which is data-poor everywhere: the entire 2023 corpus holds 120
