@@ -86,7 +86,8 @@ cannot outscore someone mid-fall.
 ## How posture is decided
 
 `posture.js`, from midpoints of the shoulder / hip / knee / ankle pairs. A joint
-below confidence 0.5 counts as missing.
+below `KP_CONF_THRESHOLD` (0.65) counts as missing - see the occlusion-tier
+section below for why that number is load-bearing.
 
 | feature | meaning |
 | --- | --- |
@@ -96,22 +97,66 @@ below confidence 0.5 counts as missing.
 | `thighShinRatio` | projected thigh length over projected shin length |
 | `hipAnkleDrop` | `(ankleY - hipY)` over torso length. **Signed** - negative means ankles above hips |
 | `stanceOffset` | horizontal hip-to-ankle distance over torso length |
-| `aspect` | box w/h, tiebreak only, never a gate |
+| `aspect` | box w/h. Since 2026-08-12 a **gate in its own right** - `>= 1.5` is a fall on its own |
 
 Order:
 
-1. `torsoAngle >= 50` (or `aspect >= 1.5` with `torsoAngle >= 30`, covering a
-   body lying toward the lens) is a **fall**
-2. `thighShinRatio >= 2.5` is a **fall** - the shin points at the lens, i.e.
+1. `torsoAngle >= 50` (or `aspect >= 1.5` alone, covering a body lying toward
+   the lens) is a **fall**
+2. `kneeDrop <= -0.25` is a **fall** - the knees are above the hips, which is a
+   body on its back or sprawled, never a seated posture
+3. `thighShinRatio >= 2.5` is a **fall** - the shin points at the lens, i.e.
    kneeling or on all fours
-3. `kneeAngle < 130` **and** `0.3 <= hipAnkleDrop < 1.0` **and**
+4. `kneeAngle < 130` **and** `0.3 <= hipAnkleDrop < 1.0` **and**
    `stanceOffset < 0.5` is a **squat**
-4. `thighShinRatio < 0.75` is a **sit**
-5. `kneeDrop < 0.5` / `kneeAngle < 150` is a **sit**
-6. else **stand**
+5. `thighShinRatio < 0.75` is a **sit**
+6. `kneeDrop < 0.5` / `kneeAngle < 150` is a **sit**
+7. else **stand**
 
-Steps 2 and 3 were added 2026-08-12 and are calibrated against 3,106 measured
+Steps 3 and 4 were added 2026-08-12 and are calibrated against 3,106 measured
 detections rather than the fixture set - see "Calibration at scale" below.
+
+### Steps 1 and 2, added 2026-08-12 after a dojo video
+
+Both were found the same way the thigh gate was - by replaying real footage
+rather than reasoning about the thresholds. A 51-second aikido clip produced a
+frame of a man **flat on his back** returning `sit` at 0.77.
+
+**Why it escaped.** His torso read 25deg (under the 50 gate), his box aspect was
+1.96, and the wide-box hatch then required `torsoAngle >= 30` - so it missed by
+4.6deg. Falling through, `kneeDrop` was **-1.11**: knees a full torso-length
+above the hips. A negative kneeDrop is trivially under `STAND_KNEE_DROP`, so the
+sit branch claimed him.
+
+**The asymmetry is the real lesson.** `SQUAT_HIP_ANKLE_DROP_MIN` was added
+earlier for exactly this shape, on the stated reasoning that "a fall relabelled
+`squat` is a missed alarm". That guard was applied to the squat gate and nowhere
+else, so the leak did not close - it moved to `sit`. A guard on one branch of a
+decision chain is not a guard on the property.
+
+Measured over the corpus, among detections predicted `sit`:
+
+| kneeDrop | ground truth fall : sit |
+| --- | --- |
+| below -1.00 | **36 : 0** |
+| -1.00 to -0.50 | 109 : 2 |
+| -0.50 to -0.25 | 109 : 7 |
+
+254 recovered falls against 9 sits, ~28:1. The floor is -0.25 and not 0 because
+`STAND_KNEE_DROP`'s own comment records a genuine bench-sit at -0.16, legs drawn
+up; a floor at 0 would have reclassified that real sit as a fall.
+
+**The wide-box condition was self-defeating.** `aspect >= 1.5` existed for bodies
+foreshortened along the view axis - which have a *low* torso angle by
+construction - and then required `torsoAngle >= 30`. The two halves worked
+against each other. Measured: 27 corpus detections have a wide box and were not
+called fall; of the 18 carrying a label, **18 are falls, zero sit, zero stand**,
+in every torsoAngle band below 30. Removing the angle condition cost nothing
+measurable. Residual risk, stated because absence of evidence is what it rests
+on: a standing person with arms fully outstretched can exceed 1.5. None appears
+in 9,331 detections, but the corpus is fall-heavy.
+
+Both are pinned by `npm run posture`.
 
 ### Why squat sits where it does in the order
 
@@ -230,22 +275,23 @@ reader would assume, because the set could not yet fail.
 
 | | clean | perturbed |
 | --- | --- | --- |
-| accuracy | **11/13 (84.6%)** | **63/78 (80.8%)** |
-| macro-F1 | 0.878 | 0.841 |
+| accuracy | **11/13 (84.6%)** | **66/78 (84.6%)** |
+| macro-F1 | 0.878 | 0.878 |
 
-Per-class under perturbation: `fall` P=1.000 R=0.643, `sit` P=0.889 R=1.000,
-`stand` P=0.667 R=1.000. `squat` has **no fixture yet** and is excluded from
-macro-F1 - see the note on it below.
+Per-class under perturbation: `fall` P=1.000 R=0.714, `sit` P=1.000 R=1.000,
+`stand` P=0.667 R=1.000. `squat` has no single-subject fixture and is excluded
+from macro-F1 - see the note on it below.
 
-The accuracy fell because the set gained cases it fails, which is the point. Two
-of the five new fixtures are labelled KNOWN GAP and are expected to fail; they
-account for 12 of the 15 missed fall trials. The remaining 3 are
-`court-fall-overhead.jpg` flipping to `sit` under hflip, grayscale and
-downscale - the kneeling gate holds it on the clean image but only just, and
-that fragility is now visible instead of absent.
+**Updated 2026-08-12** from 63/78 (80.8%) and macro-F1 0.841, after the inverted
+and wide-box gates below. `sit` precision went 0.889 to 1.000 - it no longer
+fires on anyone - and fall recall 0.643 to 0.714.
 
-Survival by perturbation: hflip 10/13, grayscale 10/13, dark-40% 11/13,
-blur-3px 11/13, downscale-320 10/13, crop-80% 11/13.
+Survival by perturbation is now uniform: **11/13 on all six.** That is the
+result worth reading, not the headline. Every one of the 12 failing trials is
+one of the two KNOWN GAP fixtures replayed six times; nothing else flips under
+any perturbation. Previously `court-fall-overhead.jpg` also flipped to `sit`
+under hflip, grayscale and downscale, so the kneeling gate was holding it by a
+thread on the clean image only. It no longer depends on that gate.
 
 **No single-subject `squat` fixture exists**, so the class still has no top-1
 true positive and is excluded from macro-F1.
@@ -359,8 +405,8 @@ CCTV is mounted high.
 perturbations is 78 trials, not 78 independent samples. The set is still far too
 small to quote anywhere load-bearing, and it is now deliberately unbalanced
 toward hard cases: five of the thirteen came from the 2023 corpus specifically
-because they were failure candidates. An 80.8% measured on a set selected that
-way is not comparable to 80.8% on a representative sample, and reading it as a
+because they were failure candidates. An 84.6% measured on a set selected that
+way is not comparable to 84.6% on a representative sample, and reading it as a
 deployment accuracy would be wrong in both directions.
 
 What it is good for is regression detection, which the previous set had stopped
@@ -492,11 +538,14 @@ Also expected:
   That is a detection miss upstream of posture, and no geometry change reaches
   it. Kept as a second failing fixture precisely to keep it distinguishable from
   the view-axis case.
-- **The kneeling gate is marginal on real imagery.** `thighShinRatio >= 2.5`
-  recovers `court-fall-overhead.jpg` on the clean image, but that fixture still
-  flips to `sit` under hflip, grayscale and downscale-320. The gate is a genuine
-  improvement, not a solved case.
-- **`squat` is tier-A only and has no eval fixture.** A waist-up crouch returns
+- **The kneeling gate is no longer what holds `court-fall-overhead.jpg`.** It
+  used to recover that fixture on the clean image only, with the fixture still
+  flipping to `sit` under hflip, grayscale and downscale-320. Since the inverted
+  gate (`kneeDrop <= -0.25`) it survives all six perturbations - she is on her
+  back with her knees drawn up, which is that gate's exact shape. The kneeling
+  gate remains a genuine improvement but is no longer load-bearing here, and its
+  own marginality is now untested by any fixture.
+- **`squat` is tier-A only and has no single-subject eval fixture.** A waist-up crouch returns
   `sit`, by construction. The class is pinned by unit tests built from real
   corpus keypoints and by nothing else.
 - Overlapping people are only separated as well as NMS at IoU 0.45 allows. The

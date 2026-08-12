@@ -41,11 +41,24 @@ const KP_CONF_THRESHOLD = 0.65;
 const FALL_TORSO_ANGLE = 50;
 
 // A person lying directly toward or away from the camera has a foreshortened
-// torso, so the angle understates how horizontal they are. A wide box plus a
-// partly-tilted torso covers that case. Measured: the street fall's box aspect
-// is 2.28, every upright fixture is between 0.30 and 0.84.
+// torso, so the angle understates how horizontal they are. A wide box covers
+// that case. Measured: the street fall's box aspect is 2.28, every upright
+// fixture is between 0.30 and 0.84.
+//
+// This used to additionally require torsoAngle >= 30, which made the escape
+// hatch unreachable in exactly the geometry it exists for - a body foreshortened
+// along the view axis has a LOW torso angle by construction, so the two
+// conditions worked against each other. Measured over the corpus (2026-08-12):
+// 27 detections have aspect >= 1.5 and were not called fall; of the 18 that
+// carry a ground-truth label, 18 are falls and none is a sit or a stand, in
+// every torsoAngle band below 30. The angle condition cost recall and bought
+// nothing measurable, so it is gone.
+//
+// Residual risk, stated because the corpus cannot rule it out: a standing person
+// with arms fully outstretched can exceed 1.5 while upright. None appears in
+// 9,331 detections, but the corpus is fall-heavy, so this is an argument from
+// absence. The tracker's 1.2s sustain is what stops a single such frame alarming.
 const FALL_ASPECT = 1.5;
-const FALL_ASPECT_TORSO_ANGLE = 30;
 
 // Below FALL_TORSO_ANGLE but above this, the torso is neither clearly upright
 // nor clearly horizontal (bending, crouching, reaching down). We do not flip the
@@ -56,6 +69,31 @@ const AMBIGUOUS_TORSO_ANGLE = 30;
 // Vertical hip-to-knee separation, normalised by torso length. Measured: seated
 // on a bench -0.16 (knees above hips, legs drawn up), standing 0.74 to 0.83.
 const STAND_KNEE_DROP = 0.5;
+
+// Knees this far ABOVE the hips is not a seated posture - it is a body on its
+// back, sprawled, or inverted. Without this the sit branch swallows them: a
+// negative kneeDrop is trivially < STAND_KNEE_DROP, so `sit` was the answer for
+// anyone lying down whose torso angle stayed under the fall gate.
+//
+// This is the same guard the squat gate already had. SQUAT_HIP_ANKLE_DROP_MIN
+// was added because inverted bodies were leaking into `squat`, on the reasoning
+// that "a fall relabelled `squat` is a missed alarm" - but the sit branch below
+// never got the equivalent, so the leak simply moved from `squat` to `sit`.
+//
+// Placed at -0.25 rather than 0 deliberately: STAND_KNEE_DROP's own comment
+// records a genuine bench-sit measured at -0.16, legs drawn up. A floor at 0
+// would reclassify that real sit as a fall. -0.25 sits below it with margin.
+//
+// Measured over the corpus (2026-08-12), among detections predicted `sit`:
+//   kneeDrop < -1.00   36 fall :  0 sit
+//   -1.00 to -0.50    109 fall :  2 sit
+//   -0.50 to -0.25    109 fall :  7 sit
+// 254 recovered falls against 9 sits turned into false alarms, ~28:1. Read the
+// `fall` label with the caveat MODEL_CARD gives it - the 2023 class marks
+// "person is down", which includes seated-on-the-ground - but a person on the
+// ground with knees above their hips is sprawled, and "down" is the alarm an
+// anomaly detector should raise either way.
+const INVERTED_KNEE_DROP = -0.25;
 
 // Interior angle at the knee. Measured: seated 87 deg, standing 175-179 deg.
 // 150 sits in the wide empty gap between them.
@@ -264,7 +302,7 @@ function classifyPosture(keypoints, box, personConf) {
   // Fall: torso reads horizontal, either directly or via a wide box that implies
   // a foreshortened one.
   const horizontal = f.torsoAngle >= FALL_TORSO_ANGLE;
-  const foreshortened = f.aspect >= FALL_ASPECT && f.torsoAngle >= FALL_ASPECT_TORSO_ANGLE;
+  const foreshortened = f.aspect >= FALL_ASPECT;
   if (horizontal || foreshortened) {
     return {
       className: 'fall',
@@ -293,6 +331,27 @@ function classifyPosture(keypoints, box, personConf) {
       confidence: personConf * TIER_NO_LEGS * leanPenalty,
       tier: 'C',
       reason: 'knees not visible; sit/stand indeterminate',
+    };
+  }
+
+  // Knees above the hips. Checked here, immediately after tier C, so it covers
+  // tier B as well - the tier-B branch below has only kneeDrop to work with and
+  // would otherwise answer `sit` for a body on its back with no ankles visible,
+  // which is the exact frame that found this (a man flat on a dojo mat, torso
+  // 25deg, aspect 1.96, kneeDrop -1.11, returned `sit` at 0.77).
+  //
+  // Emitted as a fall rather than as a discount, for the same reason the thigh
+  // gate is decisive: this is a statement about geometry, not a correlation. No
+  // seated posture puts the knees a quarter of a torso-length above the hips.
+  if (f.kneeDrop !== null && f.kneeDrop <= INVERTED_KNEE_DROP) {
+    return {
+      className: 'fall',
+      confidence:
+        personConf *
+        (f.kneeAngle === null ? TIER_NO_ANKLE : TIER_FULL) *
+        margin(f.kneeDrop, INVERTED_KNEE_DROP, 1),
+      tier: f.kneeAngle === null ? 'B' : 'A',
+      reason: `knees ${(-f.kneeDrop).toFixed(2)} above hips (inverted)`,
     };
   }
 
