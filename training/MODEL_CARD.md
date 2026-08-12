@@ -275,26 +275,39 @@ reader would assume, because the set could not yet fail.
 
 | | clean | perturbed |
 | --- | --- | --- |
-| accuracy | **13/15 (86.7%)** | **78/90 (86.7%)** |
-| macro-F1 | 0.905 | 0.905 |
+| accuracy | **16/19 (84.2%)** | **98/114 (86.0%)** |
+| macro-F1 | 0.838 | 0.859 |
 
 Per-class under perturbation: `fall` P=1.000 R=0.750, `sit` P=1.000 R=1.000,
-`stand` P=0.750 R=1.000. `squat` has no single-subject fixture and is excluded
-from macro-F1 - see the note on it below.
+`stand` P=0.750 R=1.000, `squat` P=0.769 R=0.833.
+
+**macro-F1 now spans all four classes**, where every previous figure in this
+document spanned three. 0.859 is therefore *not* a regression from 0.905 - it is
+a different average, over a set that finally includes the class that had no
+coverage. Comparisons across that line are meaningless.
 
 **Updated 2026-08-12** from 63/78 (80.8%) and macro-F1 0.841, after the inverted
 and wide-box gates below. `sit` precision went 0.889 to 1.000 - it no longer
 fires on anyone - and fall recall 0.643 to 0.714.
 
-Survival by perturbation is now uniform: **13/15 on all six.** That is the
-result worth reading, not the headline. Every one of the 12 failing trials is
-one of the two KNOWN GAP fixtures replayed six times; nothing else flips under
-any perturbation. Previously `court-fall-overhead.jpg` also flipped to `sit`
-under hflip, grayscale and downscale, so the kneeling gate was holding it by a
-thread on the clean image only. It no longer depends on that gate.
+Three fixtures are labelled KNOWN GAP and expected to fail: two falls that 2D
+geometry cannot express, and `squat-ceiling-gap.jpg`, which sits 0.05 the wrong
+side of `SQUAT_HIP_ANKLE_DROP`. Between the 2026-08-12 gates and the squat
+fixtures, nothing else flips under any perturbation - `court-fall-overhead.jpg`
+used to flip to `sit` under three of them, so the kneeling gate had been holding
+it by a thread on the clean image only. It no longer depends on that gate.
 
-**No single-subject `squat` fixture exists**, so the class still has no top-1
-true positive and is excluded from macro-F1.
+**`squat` gained single-subject fixtures on 2026-08-12** and is now scored like
+any other class. Three deep bodyweight squats - front, back and profile - pass
+top-1 at tier A, and a fourth is kept as a deliberate failure. The class went
+from appearing in the confusion matrix only as a false positive to P=0.769
+R=0.833 under perturbation.
+
+The three passes are chosen to exercise the gate with the thigh both in and out
+of the image plane: the front and back views foreshorten it (the back view
+extremely so, thigh 0.17x its own shin) while the profile does not. The back
+view is also what pins the *gate ordering* - its thigh ratio is far under
+`SIT_THIGH_FORESHORTEN`, so reversing the squat and thigh gates turns it red.
 
 The claim previously made here — that the corpus "cannot supply one: every image
 in it is an accident scene" — was too strong, and was checked on 2026-08-12
@@ -427,13 +440,11 @@ Grow the set to 15-20 images per class — deliberately including desk-webcam
 framing, which the tier-C limitation above predicts will be the weak spot —
 before quoting a figure anywhere load-bearing. The priorities now, in order:
 
-1. **A clean single-subject `squat` fixture from outside the 2023 corpus.** The
-   class now has `expectedAll` coverage on the two croucher fixtures and unit
-   tests in `posture-check.mjs`, but still no top-1 true positive, so it stays
-   out of macro-F1. Shooting five or six is a half-hour job and needs no
-   licence clearance: a person crouching, full body in frame, ankles visible
-   (the gate is tier-A only), from a few heights. Vet each with
-   `npm run fixture` before adopting it.
+1. **More `squat` variety.** The class is no longer uncovered, but all four of
+   its fixtures are the same subject in the same gym from one shoot, so they
+   measure viewpoint rather than population. A second subject, a different
+   body type and a non-gym setting would say much more than a fifth angle of
+   this one. Vet each with `npm run fixture` before adopting it.
 2. **`sit`**, which is data-poor everywhere: the entire 2023 corpus holds 120
    sit boxes against 4,765 fall boxes.
 3. **High-angle and overhead framing** for every class, which the recall
@@ -561,9 +572,17 @@ Also expected:
   feature rather than a threshold change, and would need its own corpus pass.
   In the meantime the tracker's 1.2s sustain is what stops a single such frame
   mattering, and a real fall passes through this pose only briefly.
-- **`squat` is tier-A only and has no single-subject eval fixture.** A waist-up crouch returns
-  `sit`, by construction. The class is pinned by unit tests built from real
-  corpus keypoints and by nothing else.
+- **`squat` is tier-A only**, so a waist-up crouch returns `sit` by
+  construction - the gate needs ankles and cannot run without them.
+- **The squat ceiling misses genuine deep squats, and is kept anyway.**
+  `SQUAT_HIP_ANKLE_DROP = 1.0` is an upper bound, and a real three-quarter-view
+  squat measuring 1.05 falls through it to `sit`
+  (`squat-ceiling-gap.jpg`). Raising it is measurably worse: 1.0 -> 1.05 newly
+  claims 27 corpus detections of which only 3 are squats and **7 are falls**.
+  Trading 7 missed alarms for 3 correct crouches is the wrong direction for an
+  anomaly detector, so the miss stays. The fixture flips on a 0.05 margin -
+  failing clean, grayscale, dark and downscale but passing hflip, blur and crop -
+  which is what a threshold boundary honestly looks like.
 - Overlapping people are only separated as well as NMS at IoU 0.45 allows. The
   pose model does detect far more people per frame than the old one, so this
   path now gets exercised where before it did not.
