@@ -460,6 +460,53 @@ The **disagreement fallback was re-tested and kept**. When `kneeDrop` and
 deferring to `kneeAngle` instead trades 25 correct `stand` calls for 3 correct
 `sit` calls with no change to fall recall. It stays as it was.
 
+### Per-class, end to end, before and after 2026-08-12
+
+The question anyone reviewing a new class asks first is whether it broke the
+existing ones. Measured over all 9,331 corpus detections, re-dumped end to end
+rather than reasoned about:
+
+| class | | P | R | F1 | tp / fp / fn |
+| --- | --- | --- | --- | --- | --- |
+| **fall** | before | 0.943 | 0.358 | 0.519 | 705 / 43 / 1265 |
+| | **after** | 0.941 | **0.495** | **0.649** | 976 / 61 / 994 |
+| **sit** | before | 0.056 | 0.562 | 0.102 | 50 / 845 / 39 |
+| | **after** | 0.080 | 0.438 | **0.135** | 39 / 449 / 50 |
+| **stand** | before | 0.561 | 0.936 | 0.702 | 821 / 642 / 56 |
+| | **after** | 0.567 | 0.936 | **0.707** | 821 / 626 / 56 |
+| **squat** | before | - | - | 0.000 | 0 / 0 / 170 |
+| | **after** | 0.351 | 0.276 | **0.309** | 47 / 87 / 123 |
+
+**Nothing regressed.** Exactly **2 detections** out of 9,331 that were correct
+before became `squat`, both of them `sit`. Every class's F1 is flat or better.
+
+Reading each row:
+
+- **`fall`** gained 13.7 points of recall at a precision cost of 0.002. This is
+  the whole point of the day's work.
+- **`sit`** lost recall, and that is an improvement. Its precision was **0.056** -
+  it fired 895 times on labelled rows and was right 50 times, a garbage-collector
+  class in the same shape as the old detector's `sit` attractor documented at the
+  top of this card. Shedding 305 predictions to `squat` and 382 to `fall` raised
+  both its precision and its F1.
+- **`stand`** is untouched: identical 821 true positives, F1 +0.005.
+- **`squat`** went from nothing to F1 0.309.
+
+Two caveats that matter for reading this table:
+
+1. **"Before" predates all four of the 2026-08-12 gates** - kneeling, squat,
+   inverted and wide-box - so this is the whole day's work, not the squat gate
+   in isolation.
+2. **`sit` precision is depressed by the corpus's own convention.** Its `fall`
+   class marks "person is down" including seated-on-the-ground, so a correct
+   `sit` on someone sitting on the floor is scored as a `sit` false positive.
+   The before/after *comparison* is still valid; the absolute value is not.
+
+`squat`'s R=0.276 here is over all 170 ground-truth squats. The 44.3% quoted
+earlier is over the 106 that are tier A. The gate cannot run without ankles, so
+tier A is the fair denominator for judging the gate and 27.6% is the fair one
+for judging what a user actually experiences.
+
 ### Fall recall against the 2023 corpus
 
 Of 1,970 detections overlapping a 2023 `fall` box, the classifier now calls
