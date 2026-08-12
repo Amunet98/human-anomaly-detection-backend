@@ -788,10 +788,20 @@ not from a timing harness - two glances at a live readout. It is enough to
 establish the order of magnitude (~1 s per frame, roughly 3x the desktop
 figure) and not enough to quote as a benchmark.
 
-**It reports `wasm`, not `webgpu`.** The JSEP build is falling back on this
-device, so the WebGPU row remains unmeasured because WebGPU is not being reached
-at all. Worth establishing whether that is the phone, the browser version, or
-`session.js`'s `numThreads = 1` choice before optimising anything.
+**It reports `wasm`, not `webgpu`, and that is correct behaviour.** Checked via
+`chrome://gpu` on the device (Chrome 151, Android 16): **WebGPU: Disabled**, and
+directly above it **Vulkan: Disabled**. Chrome's WebGPU on Android is built on
+Vulkan through Dawn, so with Vulkan off WebGPU cannot initialise and `session.js`
+is right to fall back. Nothing to fix.
+
+The consequence is worth stating plainly: **WASM is the mobile deployment
+reality, not a degraded path.** Visitors will not toggle `chrome://flags`, so
+WebGPU is unavailable to them on Android Chrome regardless of what the JSEP build
+supports. Any mobile optimisation has to target WASM, or accept 1-2 FPS - which
+for a detector whose `FALL_CONFIRM_MS` is 1,200 ms is not obviously a problem.
+
+The WebGPU row therefore stays unmeasured on mobile for a structural reason
+rather than an untested one. Desktop Chrome remains the place to measure it.
 
 The remaining figures need a real pass on desktop Chrome (WebGPU) and desktop
 Firefox (WASM - no WebGPU in stable) before being quoted anywhere.
