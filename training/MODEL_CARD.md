@@ -796,7 +796,8 @@ different states, and the difference is annoying to reconstruct later.
 **Setup:** the live demo in a phone browser, subject standing back far enough to
 read the screen in a mirror. **Result:** the owner reports it working
 "far better than yesterday", i.e. than the same demo before the inverted and
-wide-box gates.
+wide-box gates, and separately confirmed the tier-C `LEGS HIDDEN` readout
+appears at close range.
 
 **This is a smoke test, not QA.** One device, one browser, one person, one
 lighting condition, no matrix, and no recorded output to re-examine. It is
@@ -809,10 +810,12 @@ changes land, since the inverted gate, the wide-box gate and the recovered falls
 all need the full leg chain or a horizontal torso. So it tests the case that
 improved most and leaves the two that did not:
 
-- **Tier C**, the close-range waist-up framing a phone at arm's length or a
-  laptop webcam produces. Behaviour there is the `LEGS HIDDEN` readout rather
-  than an accuracy change, and it remains unconfirmed on a device.
-- **The false-alarm path.** A crouch in full frame should read `fall` - that is
+- **Tier C** was confirmed in the same session: the close-range waist-up framing
+  a phone at arm's length produces does show the grey `LEGS HIDDEN` readout
+  rather than a confident green `STAND`. That is the honesty fix working on real
+  hardware, in the framing most visitors will actually hit. Still one device and
+  one observer, so it carries the same caveat as everything else here.
+- **The false-alarm path**, which remains the open one. A crouch in full frame should read `fall` - that is
   the 11.5% measured under "False-alarm rate" - and whether `tracker.js`'s 1.2s
   sustain actually suppresses it before the FALL CONFIRMED badge appears is the
   single most useful thing a next test could establish. It is the only claim in
