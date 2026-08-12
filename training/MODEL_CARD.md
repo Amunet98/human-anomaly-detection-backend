@@ -275,18 +275,18 @@ reader would assume, because the set could not yet fail.
 
 | | clean | perturbed |
 | --- | --- | --- |
-| accuracy | **11/13 (84.6%)** | **66/78 (84.6%)** |
-| macro-F1 | 0.878 | 0.878 |
+| accuracy | **13/15 (86.7%)** | **78/90 (86.7%)** |
+| macro-F1 | 0.905 | 0.905 |
 
-Per-class under perturbation: `fall` P=1.000 R=0.714, `sit` P=1.000 R=1.000,
-`stand` P=0.667 R=1.000. `squat` has no single-subject fixture and is excluded
+Per-class under perturbation: `fall` P=1.000 R=0.750, `sit` P=1.000 R=1.000,
+`stand` P=0.750 R=1.000. `squat` has no single-subject fixture and is excluded
 from macro-F1 - see the note on it below.
 
 **Updated 2026-08-12** from 63/78 (80.8%) and macro-F1 0.841, after the inverted
 and wide-box gates below. `sit` precision went 0.889 to 1.000 - it no longer
 fires on anyone - and fall recall 0.643 to 0.714.
 
-Survival by perturbation is now uniform: **11/13 on all six.** That is the
+Survival by perturbation is now uniform: **13/15 on all six.** That is the
 result worth reading, not the headline. Every one of the 12 failing trials is
 one of the two KNOWN GAP fixtures replayed six times; nothing else flips under
 any perturbation. Previously `court-fall-overhead.jpg` also flipped to `sit`
@@ -404,9 +404,9 @@ CCTV is mounted high.
 **Read this with the caveat it deserves.** Thirteen images through six
 perturbations is 78 trials, not 78 independent samples. The set is still far too
 small to quote anywhere load-bearing, and it is now deliberately unbalanced
-toward hard cases: five of the thirteen came from the 2023 corpus specifically
-because they were failure candidates. An 84.6% measured on a set selected that
-way is not comparable to 84.6% on a representative sample, and reading it as a
+toward hard cases: five of the fifteen came from the 2023 corpus specifically
+because they were failure candidates. An 86.7% measured on a set selected that
+way is not comparable to 86.7% on a representative sample, and reading it as a
 deployment accuracy would be wrong in both directions.
 
 What it is good for is regression detection, which the previous set had stopped
@@ -545,6 +545,22 @@ Also expected:
   back with her knees drawn up, which is that gate's exact shape. The kneeling
   gate remains a genuine improvement but is no longer load-bearing here, and its
   own marginality is now untested by any fixture.
+- **`torsoAngle` is unsigned with respect to inversion, and nothing else covers
+  it.** The feature is the angle between shoulder-mid and hip-mid off vertical -
+  it says how far from upright the torso is, never *which end is up*. A person
+  standing on their head measures the same 0deg as a person standing on their
+  feet. Found 2026-08-12 in the dojo clip: a man mid-air in a breakfall, head
+  down and legs overhead, returned `sit` at **0.84** (torsoAngle 23deg,
+  kneeDrop -0.09, kneeAngle 85deg, aspect 0.69). Every gate misses it - the
+  torso reads upright, the box is narrow so the wide-box hatch does not fire,
+  and kneeDrop -0.09 is well inside the -0.25 inverted floor. Not fixed, and
+  deliberately not fixed by lowering that floor: -0.09 is ordinary for a genuine
+  seated posture (the measured bench-sit is -0.16), so a floor that catches this
+  would reclassify real sits as falls. The tractable fix is a *signed* torso
+  feature - compare shoulder-mid y against hip-mid y directly - which is a new
+  feature rather than a threshold change, and would need its own corpus pass.
+  In the meantime the tracker's 1.2s sustain is what stops a single such frame
+  mattering, and a real fall passes through this pose only briefly.
 - **`squat` is tier-A only and has no single-subject eval fixture.** A waist-up crouch returns
   `sit`, by construction. The class is pinned by unit tests built from real
   corpus keypoints and by nothing else.
