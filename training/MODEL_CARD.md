@@ -780,12 +780,21 @@ Also expected:
 | --- | --- |
 | onnxruntime-node, 1 thread, Ryzen 5 5600U | 273–311 ms (median 287 ms, n=15) — **measured on the superseded 3-class model**; the pose model is a similar size and parameter count but has not been re-timed |
 | onnxruntime-node on Render free tier | not measured; inference is throttled to one frame per 500 ms regardless |
-| onnxruntime-web, WASM, 1 thread | not measured |
+| onnxruntime-web, WASM, 1 thread, mid-range Android (Chrome) | **919-1026 ms, 1-2 FPS** — measured 2026-08-12 from the demo's own on-screen readout, n=2 observations, not a benchmark |
 | onnxruntime-web, WebGPU | not measured |
 
-Only the first row is measured. The browser figures need a real pass on desktop
-Chrome (WebGPU), desktop Firefox (WASM — no WebGPU in stable) and a mid-range
-Android before being quoted anywhere.
+The Android row comes from the demo's own overlay during the smoke test below,
+not from a timing harness - two glances at a live readout. It is enough to
+establish the order of magnitude (~1 s per frame, roughly 3x the desktop
+figure) and not enough to quote as a benchmark.
+
+**It reports `wasm`, not `webgpu`.** The JSEP build is falling back on this
+device, so the WebGPU row remains unmeasured because WebGPU is not being reached
+at all. Worth establishing whether that is the phone, the browser version, or
+`session.js`'s `numThreads = 1` choice before optimising anything.
+
+The remaining figures need a real pass on desktop Chrome (WebGPU) and desktop
+Firefox (WASM - no WebGPU in stable) before being quoted anywhere.
 
 ## Device smoke test (2026-08-12)
 
@@ -836,10 +845,23 @@ improved most and leaves the two that did not:
   and ankles correctly **through a mirror, in a dim bedroom, at an angle**. No
   fixture in the set covers any of those conditions.
 
-- **The false-alarm path**, which remains the open one. Provoking it needs a
-  crouch with the torso leaned well forward - reaching for something on the
-  floor - which pushes `torsoAngle` toward the 50deg gate. Whether FALL CONFIRMED
-  then appears, or whether `FALL_CONFIRM_MS` eats it, is still unestablished. A crouch in full frame should read `fall` - that is
+- **A second, wider crouch also read `squat`**, at 69%. Still not the provocation
+  the false-alarm path needs: photographing yourself keeps the torso upright,
+  because the phone has to stay pointed at the mirror, so `torsoAngle` never
+  approaches the 50deg gate. The case that matters is reaching toward the floor
+  with the torso near-horizontal, which is close to unphotographable one-handed.
+  A second person or a timer is what that test needs.
+
+- **Tier C and tier A were observed back to back on the same posture** - one
+  frame with the legs in shot reading `SQUAT 69%`, the next with the frame cut at
+  the knees reading `LEGS HIDDEN` with no percentage. That is the tier system's
+  whole intent visible in two screenshots: not a degraded answer, a different
+  one.
+
+- **The false-alarm path**, which remains the open one. Whether FALL CONFIRMED
+  appears on a genuine forward-leaning crouch, or whether `FALL_CONFIRM_MS` eats
+  it, is still unestablished - and remains the only claim in this document
+  resting on the tracker rather than on measurement. A crouch in full frame should read `fall` - that is
   the 11.5% measured under "False-alarm rate" - and whether `tracker.js`'s 1.2s
   sustain actually suppresses it before the FALL CONFIRMED badge appears is the
   single most useful thing a next test could establish. It is the only claim in
