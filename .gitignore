@@ -133,4 +133,11 @@ dist
 .prisma/
 
 # Trained locally from corpus keypoints; regenerate with training/train_posture_keypoints.py
+# The .json is the class order written beside the model - the two must stay paired,
+# so they are ignored and regenerated together.
 training/posture_keypoints.onnx
+training/posture_keypoints.json
+
+# Python bytecode - a tracked .pyc rewrites itself on every training run
+__pycache__/
+*.pyc

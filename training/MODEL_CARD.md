@@ -917,6 +917,13 @@ Per class the gains land where the gates are weakest: `squat` recall 0.281 ->
 0.824, `sit` 0.422 -> 0.667, `fall` 0.504 -> 0.762. Better accuracy *and* four
 times fewer false alarms, which is the combination that matters.
 
+> **Both columns are in-distribution and only the first one survives leaving it.**
+> The 0.043 becomes **0.610** once the model is tested on a domain it was not
+> trained on - worse than the gates by a factor of five, not better by a factor
+> of four. See "Cross-domain transfer, measured" below, which was run
+> specifically to check this table and found half of it to be an artifact of how
+> it was split.
+
 **It is not riding the occlusion shortcut.** The two sources differ in visibility
 (corpus-2023 is 76% tier A, POLAR 59%), and confidences alone reach 0.621 against
 0.357 chance - so the leak is real and available. What clears the model is that
@@ -962,6 +969,179 @@ yet better than what ships.
 
 The ONNX export is gitignored and nothing is wired into `inference.js`.
 
+### Cross-domain transfer, measured (2026-08-12)
+
+The section above rests the whole verdict on 19 fixtures, one of which is the
+difference between shipping and not. That is too thin a thread, and it also
+skips a question nobody had asked: **which of the four poses does this model
+transfer on?** Every figure above it comes from a grouped split that holds out
+*images* and not *domains*, so it cannot answer that by construction.
+
+`train_posture_keypoints.py --train-on X --test-on Y` trains on one corpus
+entirely and tests on the other entirely. Three arms were run, all tier A -
+where the gates can actually compete, since the squat gate needs ankles.
+
+**First, the structural limit, because it shapes everything else.** The two
+corpora are nearly class-disjoint:
+
+| | fall | sit | squat | stand |
+| --- | --- | --- | --- | --- |
+| `corpus-2023` | 1,970 | 89 | 170 | 877 |
+| `corpus-polar` | 0 | 1,908 | 1,922 | 1,954 |
+
+So **`fall` cannot be cross-domain tested at all with local data** - train on
+POLAR and the model has never seen one. What *is* testable is sit / squat /
+stand, and those happen to be exactly the three a hybrid integration would ask
+the model for, with `posture.js` keeping authority over `fall`.
+
+**The gate baseline per corpus**, which was not previously recorded anywhere and
+is the bar each arm is read against:
+
+| | | sit R / P | squat R / P | stand R / P | acc |
+| --- | --- | --- | --- | --- | --- |
+| `corpus-2023` | tier A, n=924 | 0.542 / 0.451 | 0.427 / 0.839 | 0.932 / 0.953 | 0.847 |
+| `corpus-polar` | tier A, n=3,414 | 0.560 / 0.648 | 0.443 / 0.847 | 0.987 / 0.876 | 0.663 |
+
+Squat recall 0.427 against 0.443, across two unrelated label sets, is the
+domain-invariance claim holding on the gates' own terms.
+
+#### The transfer results
+
+| arm | acc | sit R / P | squat R / P | stand R / P |
+| --- | --- | --- | --- | --- |
+| **train POLAR -> test 2023** | | | | |
+| gates | 0.847 | 0.542 / 0.451 | 0.427 / 0.839 | 0.932 / 0.953 |
+| model | **0.859** | 0.644 / 0.494 | **0.809** / 0.571 | 0.883 / 0.965 |
+| **train 2023 -> test POLAR** | | | | |
+| gates | 0.663 | 0.560 / 0.648 | 0.443 / 0.847 | 0.987 / 0.876 |
+| model | **0.727** | 0.563 / 0.614 | 0.606 / 0.794 | 0.987 / **0.744** |
+| **mixed, grouped split (ceiling)** | | | | |
+| gates | 0.703 | 0.498 / 0.610 | 0.464 / 0.838 | 0.976 / 0.913 |
+| model | **0.893** | 0.849 / 0.793 | 0.838 / 0.898 | 0.953 / 0.940 |
+
+**`squat` genuinely transfers, and that is the real result here.** Trained on
+POLAR and tested on a corpus it has never seen, the model holds squat recall at
+**0.809** against an in-distribution ceiling of 0.838-0.888 and a gate baseline
+of 0.427. A class this document has spent thousands of words apologising for -
+44.3% recall, 35.1% precision, "wrong more often than it is right" - is
+learnable, and the learned version survives a domain change nearly intact.
+
+**The reverse direction does not.** Trained on 2023 and tested on POLAR, stand
+precision falls from the gates' 0.876 to **0.744**. Checked rather than excused:
+the 2023 tier-A train set is 59 sit / 110 squat / 755 stand, so class imbalance
+is the obvious suspect, but resampling to balance it only recovers 0.744 ->
+0.812 and squat recall 0.606 -> 0.623. Still under the gates. The asymmetry is
+mostly about what each corpus can teach - POLAR offers 3,414 balanced tier-A
+rows with clean labels, 2023 offers 924 rows that are 82% `stand` and whose
+`squat` class means "crouching bystander" - but "we only have one corpus worth
+training on" is a finding, not a mitigating circumstance.
+
+#### The out-of-domain false-alarm rate, which is the headline
+
+The claim this section originally led with was four times fewer false alarms:
+0.181 for the gates against 0.043 for the model. **That figure does not survive
+leaving the training domain.** It was measured on a grouped split of the mixed
+corpora, so the model had seen POLAR's domain even though it had not seen those
+particular images.
+
+Trained on `corpus-2023` only and tested on **all** of POLAR - 5,784 people, no
+falls present by construction, so every `fall` is wrong:
+
+| | tier A (n=3,414) | all tiers (n=5,784) |
+| --- | --- | --- |
+| `posture.js` gates | 0.176 | **0.115** |
+| MLP (128,64) | 0.361 | 0.460 |
+| GradientBoosting | 0.494 | **0.610** |
+
+**The model calls 61% of ordinary, non-fallen people a fall.** The gates call
+11.5%. The direction of the original claim inverts: five times worse, not four
+times better.
+
+Some of that is the 2023 prior - 1,970 falls against 89 sits teaches a model to
+guess `fall` - and the honest statement of the limit is that **there is no local
+configuration in which this model's `fall` output can be validated out of
+domain**, because the only corpus containing falls is the only corpus it can be
+trained on for them. That is the class-disjointness above, arriving as a
+practical consequence rather than a curiosity. Any deployment is out of domain.
+
+This is the strongest evidence in this document for keeping the fall path
+geometric. It also retroactively explains `lodge-group-b`: a confident `fall`
+0.80 on a seated woman in a domestic interior is not an unlucky fixture, it is
+the 61% showing up in the one place the fixtures could see it.
+
+#### What a hybrid would actually score
+
+Comparing the model's standalone predictions to the gates measures a system
+nobody proposed building. Under a hybrid the fall gates run first and the model
+only ever sees rows they declined, so on any row the gates claimed the answer is
+`fall` regardless of the model's vote. The script now simulates that arm
+directly:
+
+| | squat R | sit R | stand R / P | acc |
+| --- | --- | --- | --- | --- |
+| POLAR -> 2023, gates | 0.427 | 0.542 | 0.932 / 0.953 | 0.847 |
+| POLAR -> 2023, hybrid | **0.627** | 0.508 | 0.882 / 0.965 | 0.828 |
+| 2023 -> POLAR, gates | 0.443 | 0.560 | 0.987 / 0.876 | 0.663 |
+| 2023 -> POLAR, hybrid | 0.397 | 0.428 | 0.986 / 0.763 | 0.610 |
+
+The hybrid keeps most of the squat gain in the good direction (+20 points) and
+loses it entirely in the other. Note also that it scores *below* the gates on
+overall accuracy in both directions - `stand` is 82% of the 2023 tier-A rows and
+the model trades stand recall for squat recall.
+
+#### Verdict against a pre-registered bar
+
+The bar was written down before the arms were run, which is the only way this
+kind of measurement means anything:
+
+| | required | result |
+| --- | --- | --- |
+| squat recall +10 pts, **both** directions | yes | model yes (+38.2, +16.3); **hybrid no** (-4.6 reverse) |
+| stand precision not below the gates' | yes | **no** - 0.744 (0.812 balanced) vs 0.876 reverse |
+| fall P/R untouched | yes | not reached |
+| fixtures >= 16/19 | yes | not reached |
+
+**Missed, so nothing shipped and nothing was wired in.** Two of four criteria
+fail in the 2023 -> POLAR direction, and the false-alarm collapse above is a
+stronger argument against than any of them.
+
+**What is worth keeping from it**, and what changes the priorities below:
+
+- `squat` is learnable and transfers. The gates' 44.3% is a property of the
+  *feature space*, not of the problem, and this measures the gap at roughly 38
+  points on the arm where training data exists.
+- The model's fall output is unvalidatable out of domain and measurably bad on
+  the one out-of-domain test available. Keeping the fall path geometric is no
+  longer a preference, it is measured.
+- Calibration, since a shipped probability would feed `tracker.js`'s
+  confidence-weighted vote: on the POLAR -> 2023 arm top-1 ECE is **0.036**
+  (mean confidence 0.895 against accuracy 0.859), which is usable. On the
+  reverse arm it is **0.221** (0.947 against 0.727) - badly overconfident, and
+  it would poison the vote rather than inform it. Calibration tracks how well
+  the domain is covered, not the class.
+- The next useful experiment is narrower than "more domains": a **squat-only,
+  POLAR-trained** second opinion consulted at tier A when the gates say `sit`.
+  That is the branch the missed crouches fall through to - `sit` is the
+  garbage-collector class this document already describes, precision 0.056
+  before the squat gate existed and still only 0.080 after. Such a probe touches
+  neither the fall path nor `stand`, so neither failing criterion above applies
+  to it, and the gates keep the veto.
+
+Reproduce with:
+
+```
+.venv/bin/python training/train_posture_keypoints.py \
+    --classes sit,squat,stand --train-on polar --test-on 2023 --tier-a --calibration
+.venv/bin/python training/train_posture_keypoints.py \
+    --classes sit,squat,stand --train-on 2023 --test-on polar --tier-a --calibration
+.venv/bin/python training/train_posture_keypoints.py --train-on 2023 --test-on polar
+```
+
+Measurement runs no longer overwrite `posture_keypoints.onnx` - that needs
+`--export`, which also writes a `.json` beside it carrying the class order,
+since the label encoder's order is not `CLASS_NAMES`' and a consumer that
+guesses it silently swaps two postures.
+
 ## If accuracy needs to improve
 
 In order of expected value per unit of effort:
@@ -982,12 +1162,19 @@ In order of expected value per unit of effort:
    where the remaining error is.
 4. **Solve tier C properly** if desk framing matters. Geometry alone cannot;
    it needs the transition into the pose (temporal) or scene context.
-5. **Not a trained keypoint classifier - that was tried on 2026-08-12 and lost
-   on the held-out fixtures.** It beats the gates in-distribution (0.830 vs
-   0.693, four times fewer false alarms) and loses out of it, with a missed fall
-   and a confident false alarm on a seated woman. See "A trained keypoint
-   classifier was tried and is NOT shipped". Revisit it with training data from
-   more domains, not with better hyperparameters.
+5. **A trained keypoint classifier for `squat` alone**, consulted at tier A when
+   the gates answer `sit`. This replaces the flat "not a trained classifier"
+   entry that stood here, because the cross-domain measurement split the
+   question in two: `squat` transfers (recall 0.809 trained on POLAR, tested on
+   a corpus it has never seen, against the gates' 0.427), while the model's
+   `fall` output collapses out of domain to a 61% false-alarm rate against the
+   gates' 11.5%. A squat-only second opinion takes the half that works and
+   touches neither the fall path nor `stand`, the two things the full
+   replacement broke. See "Cross-domain transfer, measured".
+
+   **Still not a full replacement.** That was tried on 2026-08-12, lost on the
+   held-out fixtures, and then lost again on the cross-domain arms against a
+   pre-registered bar.
 6. **Only then consider yolov8s-pose.** Roughly doubles inference cost, which
    the 512 MB host cannot absorb — though it matters much less now that the
    browser can carry the live path. Keypoint localisation is *mostly* not the
