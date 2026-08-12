@@ -7,6 +7,11 @@
 [![Prisma](https://img.shields.io/badge/Prisma-2d3748?logo=prisma)](https://www.prisma.io)
 [![YOLOv8](https://img.shields.io/badge/YOLOv8-ONNX-8A2BE2)](https://docs.ultralytics.com)
 
+The system began as my **final-year engineering project** and has been rebuilt
+since — most consequentially by replacing the 3-class detector I trained for it
+with a pretrained pose model plus a posture classifier over keypoint geometry,
+a decision made on evaluation rather than preference (see below).
+
 Express + Socket.IO + Prisma/Postgres API. This is the hub of the system: it
 receives live camera frames from [server-opencv](https://github.com/Amunet98/server-opencv),
 runs a self-hosted YOLOv8 ONNX model (`best.onnx`) against them, broadcasts
