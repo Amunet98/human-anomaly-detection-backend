@@ -787,6 +787,77 @@ Only the first row is measured. The browser figures need a real pass on desktop
 Chrome (WebGPU), desktop Firefox (WASM — no WebGPU in stable) and a mid-range
 Android before being quoted anywhere.
 
+## A trained keypoint classifier was tried and is NOT shipped (2026-08-12)
+
+`training/train_posture_keypoints.py` trains a classifier on the 17 joint
+positions instead of deciding posture with hand-tuned gates. It is the obvious
+upgrade, it works in-distribution, and it is not deployed. This section exists so
+the next person to have that idea finds the measurement rather than repeating it.
+
+**Setup.** 8,781 labelled detections - `corpus-2023` (falls) plus `corpus-polar`
+(sit/squat/stand), minus the 108 disputed fall labels. Input is each joint
+normalised to the person's own box plus the box aspect, so image position and
+scale are not learnable. Split by *image*, so multi-person frames never span
+train and test. The geometric classifier's answer travels in each row as `pred`,
+so the baseline is measured on the identical split.
+
+**In-distribution it wins clearly**, on tier A where the gates can compete:
+
+| | accuracy | false alarms on POLAR |
+| --- | --- | --- |
+| `posture.js` gates | 0.693 | 0.181 |
+| **GradientBoosting** | **0.830** | **0.043** |
+| MLP (128,64) | 0.816 | 0.051 |
+
+Per class the gains land where the gates are weakest: `squat` recall 0.281 ->
+0.824, `sit` 0.422 -> 0.667, `fall` 0.504 -> 0.762. Better accuracy *and* four
+times fewer false alarms, which is the combination that matters.
+
+**It is not riding the occlusion shortcut.** The two sources differ in visibility
+(corpus-2023 is 76% tier A, POLAR 59%), and confidences alone reach 0.621 against
+0.357 chance - so the leak is real and available. What clears the model is that
+coordinates alone score 0.830, *identical* to the full feature set. The ablation
+is retained in the script: if a future change makes "everything" beat
+"coordinates only" by more than noise, that gap is the leak being exploited.
+
+**Then it loses on the held-out fixtures**, which come from neither corpus:
+
+| | fixtures |
+| --- | --- |
+| `posture.js` gates | **16/19** |
+| trained model | 15/19 |
+
+One fixture of difference on n=19 is statistically nothing. The *kind* of
+disagreement is not:
+
+- `street-fall-with-crouchers.jpg` - **a missed fall.** The woman on the ground
+  reads `fall` 0.65 from the gates (torso 89deg) and `squat` 0.72 from the model.
+  With no `fall` in the frame the top-1 reduction then reports a bystander's
+  `stand`.
+- `lodge-group-b.jpg` - **a confident false alarm.** A seated woman reads `sit`
+  0.45 from the gates and `fall` **0.80** from the model. It gets `lodge-group-a`
+  right, so it flips across the near-identical pair those two fixtures exist to
+  catch.
+- `squat-ceiling-gap.jpg` - the model wins, correctly returning `squat` where the
+  gates hit the `SQUAT_HIP_ANKLE_DROP` ceiling. Learning the boundary does beat
+  hand-placing it.
+
+**The diagnosis is domain shift.** Training data is accident scenes plus
+gym/stock photography. The lodge fixtures are domestic interiors with a sofa - a
+domain neither source covers. **Geometry is domain-invariant by construction**: a
+shoulder-to-hip angle means the same thing in any room, whereas a learned model
+inherits its training distribution. That is an uncomfortable echo of the 2023
+detector documented at the top of this card - not the same failure, since this
+input contains no background at all, but the same shape: strong in-distribution,
+unreliable outside it.
+
+**What would change the verdict:** training data from more domains, domestic
+interiors first; and a fixture set large enough that 15-vs-16 carries
+information. The approach is sound - the squat result proves it - but it is not
+yet better than what ships.
+
+The ONNX export is gitignored and nothing is wired into `inference.js`.
+
 ## If accuracy needs to improve
 
 In order of expected value per unit of effort:
@@ -807,7 +878,13 @@ In order of expected value per unit of effort:
    where the remaining error is.
 4. **Solve tier C properly** if desk framing matters. Geometry alone cannot;
    it needs the transition into the pose (temporal) or scene context.
-5. **Only then consider yolov8s-pose.** Roughly doubles inference cost, which
+5. **Not a trained keypoint classifier - that was tried on 2026-08-12 and lost
+   on the held-out fixtures.** It beats the gates in-distribution (0.830 vs
+   0.693, four times fewer false alarms) and loses out of it, with a missed fall
+   and a confident false alarm on a seated woman. See "A trained keypoint
+   classifier was tried and is NOT shipped". Revisit it with training data from
+   more domains, not with better hyperparameters.
+6. **Only then consider yolov8s-pose.** Roughly doubles inference cost, which
    the 512 MB host cannot absorb — though it matters much less now that the
    browser can carry the live path. Keypoint localisation is *mostly* not the
    bottleneck — though `bus-fall-obscured.jpg` is a case where it is, the
