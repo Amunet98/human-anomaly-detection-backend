@@ -281,6 +281,10 @@ reader would assume, because the set could not yet fail.
 Per-class under perturbation: `fall` P=1.000 R=0.750, `sit` P=1.000 R=1.000,
 `stand` P=0.750 R=1.000, `squat` P=0.769 R=0.833.
 
+`squat`'s R=0.833 is the most misleading figure in this table: measured against
+the corpus its recall is **48.1%**. See "`squat` is precise and low-recall on
+purpose" below.
+
 **macro-F1 now spans all four classes**, where every previous figure in this
 document spanned three. 0.859 is therefore *not* a regression from 0.905 - it is
 a different average, over a set that finally includes the class that had no
@@ -308,6 +312,50 @@ of the image plane: the front and back views foreshorten it (the back view
 extremely so, thigh 0.17x its own shin) while the profile does not. The back
 view is also what pins the *gate ordering* - its thigh ratio is far under
 `SIT_THIGH_FORESHORTEN`, so reversing the squat and thigh gates turns it red.
+
+> **Do not read that R=0.833 as the class's recall.** All four fixtures are one
+> person doing textbook gym squats in even light, so they measure the easy
+> centre of the distribution rather than the class. **Measured against the
+> corpus, the gate catches 51 of 106 tier-A ground-truth squats - 48.1%.** The
+> fixture figure is flattering by roughly 35 points and exists to catch
+> regressions, not to describe field behaviour.
+
+### `squat` is precise and low-recall on purpose
+
+The 48.1% is not a tuning failure with a better setting waiting to be found. It
+is the price of not leaking falls, and the sweep that establishes this is worth
+keeping because the number invites re-tuning:
+
+| kneeAngle | ceiling | stance | squats caught | **falls captured** |
+| --- | --- | --- | --- | --- |
+| **130** | **1.0** | **0.5** | **48.1%** | **8.4%** |
+| 130 | 1.2 | 0.5 | 53.8% | 9.4% |
+| 150 | 1.2 | 0.5 | 55.7% | 10.7% |
+| 150 | 1.5 | 0.7 | 62.3% | 17.6% |
+| none | none | none | 95.3% | 56.7% |
+
+Measured over the tier-A pools: 106 ground-truth squats, 1,335 falls, 59 sits.
+"Falls captured" is the share of ground-truth falls whose geometry satisfies the
+squat conditions - an upper bound on leakage, since the fall gates in steps 1-3
+run first and claim many of them before the squat gate is reached.
+
+Going from 48% to 62% costs about **nine falls misread as `squat` for every
+extra squat gained**, and a fall relabelled `squat` is a missed alarm. There is
+no setting on this curve where the trade is worth taking.
+
+The cause is the same one recorded under "Calibration at scale": these features
+separate `stand` from not-`stand` and do not separate fall from sit from squat.
+Medians for fall / sit / squat are 0.89 / 0.87 / 0.90 on `thighShinRatio` and
+129 / 116 / 95 on `kneeAngle`. **A person crouching and a person down on the
+ground are not distinguishable here.** The squat gate works by carving out a
+narrow, safe corner of that overlap - which is exactly why it is precise, and
+exactly why it only reaches half the class.
+
+The honest one-line description of the class is therefore: *`squat` fires only
+on the clearest crouches and lets the rest fall through to `sit`, deliberately,
+because widening it costs fall recall at roughly 9:1.* Resolving it properly
+needs a signal these three features do not carry - the same conclusion tier C
+and the view-axis fall arrive at.
 
 The claim previously made here — that the corpus "cannot supply one: every image
 in it is an accident scene" — was too strong, and was checked on 2026-08-12
@@ -440,11 +488,14 @@ Grow the set to 15-20 images per class — deliberately including desk-webcam
 framing, which the tier-C limitation above predicts will be the weak spot —
 before quoting a figure anywhere load-bearing. The priorities now, in order:
 
-1. **More `squat` variety.** The class is no longer uncovered, but all four of
-   its fixtures are the same subject in the same gym from one shoot, so they
-   measure viewpoint rather than population. A second subject, a different
-   body type and a non-gym setting would say much more than a fifth angle of
-   this one. Vet each with `npm run fixture` before adopting it.
+1. **More `squat` variety - but do not expect it to move recall.** All four
+   fixtures are the same subject in the same gym from one shoot, so they measure
+   viewpoint rather than population; a second subject, a different body type and
+   a non-gym setting would say much more than a fifth angle of this one. What
+   they will do is make the fixture figure *honest* rather than raise it. The
+   48.1% corpus recall is a property of the feature space, not of the fixture
+   set, and no amount of fixtures changes it - see "`squat` is precise and
+   low-recall on purpose". Vet each with `npm run fixture` before adopting it.
 2. **`sit`**, which is data-poor everywhere: the entire 2023 corpus holds 120
    sit boxes against 4,765 fall boxes.
 3. **High-angle and overhead framing** for every class, which the recall
