@@ -626,8 +626,109 @@ weakest link. It now has a number instead of an acknowledgement.
 `FALL_CONFIRM_MS` 1,200 ms of sustained fall before confirming, so a crouch that
 flickers to `fall` for one frame raises nothing. What 8.1% bounds is how often a
 single frame of an ordinary person is actionable - the rate the tracker has to
-suppress, not the rate a user sees. Measuring the post-tracker rate needs video
-of people not falling, which this project still does not have.
+suppress, not the rate a user sees.
+
+**The post-tracker rate is no longer unmeasured - see the next section.** The
+short version is that the tracker does its job on transient postures and cannot
+do it at all on sustained ones, which is a sharper answer than this section
+anticipated.
+
+### Post-tracker false alarms, measured on video (2026-08-12)
+
+This was the last claim in this document resting on reasoning rather than
+measurement: that `FALL_CONFIRM_MS` absorbs the 11.5%. `npm run falsealarm`
+now measures it, by running the real detector over video frames, feeding the
+results into the real `tracker.js` in order, and reporting every confirmation.
+
+Measured on the **UR Fall Detection Dataset's 40 ADL sequences** (Kepski &
+Kwolek, University of Rzeszow) - activities of daily living in domestic
+interiors, containing no falls, so every confirmation is wrong by construction.
+CC BY-NC-SA 4.0: fine for measuring, **not** for redistribution or commercial
+use of the footage itself. Notably these are the domestic interiors this card
+elsewhere identifies as the domain neither corpus covers.
+
+40 clips, 1,502 frames, **5m 00s of footage**, analysed at 5 fps:
+
+| | |
+| --- | --- |
+| per-frame `fall` rate | **138 of 1,205 detections = 11.5%** |
+| confirmed alarms @ 1 fps (mid-range Android) | **0** |
+| confirmed alarms @ 2 fps (the server's throttle) | **0** |
+| confirmed alarms @ 5 fps | 5 = 59.9/hour |
+
+**The per-frame 11.5% reproduces POLAR's 11.5% exactly**, on a different
+dataset, in a different country, in a different decade, labelled by different
+people. Two independent corroborations of that figure now exist.
+
+**Frame rate changes the answer, and not in the intuitive direction.**
+`FALL_CONFIRM_MS` is in milliseconds but `VOTE_WINDOW` is 7 *results*, so the
+window spans 1.4 s at 5 fps and 7 s at 1 fps. A brief crouch dominates a short
+window and is diluted in a long one, which is why the slower - "worse" - rates
+are the robust ones here. Any future retune of either constant should be checked
+at all three rates rather than one.
+
+The five 5-fps alarms, inspected: **three transient** - two men bending forward
+to pick something up, one kneeling on the floor - and **two of a man lying on a
+bed**.
+
+#### The important caveat, which is a finding in its own right
+
+**Those two bed cases do not confirm at 1-2 fps only because the ADL clips are
+about 7.5 seconds long.** No posture in them lasts long enough for a slow sample
+rate to accumulate. That is an artefact of the footage, not a property of the
+system, and reading "0 per hour" as "it does not alarm on someone in bed" would
+be exactly wrong.
+
+Tested rather than assumed. Looping the settled-in-bed tail of `adl-10` into 40
+continuous seconds:
+
+| rate | result |
+| --- | --- |
+| 1 fps | confirms at 2.0 s, **holds for 37.8 s** |
+| 2 fps | confirms at 1.6 s, holds for 38.2 s |
+| 5 fps | confirms at 1.2 s, holds for 38.6 s |
+
+**A person lying on a bed raises a confirmed fall at every rate, within two
+seconds, and never clears.** (The loop is synthetic, so the subject is unnaturally
+still - but the geometry it measures is a real frame of a real person in a bed,
+and a horizontal torso stays horizontal however much someone shifts around.)
+
+This is the `tracker.js` limitation stated exactly: its only mechanism is *did
+this persist*, so it separates a fall from a transient crouch and **cannot
+separate a fall from any sustained horizontal posture**. The "Known failure
+modes" section already said a person who has fallen and a person lying on a sofa
+look identical in one frame; what is new is that the tracker does not fix it,
+because persistence is the very thing they share.
+
+The practical consequence is worth stating plainly for anyone evaluating this
+for a bedroom or care setting: **on the floor is a fall, on the bed is not, and
+this system has no way to tell those apart.** Resolving it needs a signal
+geometry does not carry - a furniture/floor zone mask, a ground-plane homography
+from a fixed camera, or the transition into the pose. It is the same class of
+gap as tier C and camera elevation.
+
+#### What this does and does not establish
+
+It establishes that the 1.2 s sustain genuinely absorbs transient false
+positives - 138 frames looked like a fall and 0 survived at deployed rates on
+short mixed-activity clips - and that it provides no protection whatsoever
+against sustained ones. Five minutes, one subject, one apartment, one camera
+height. It is a measurement, not a deployment figure, and the bed result matters
+far more than the zero.
+
+Reproduce with:
+
+```
+npm run falsealarm -- <dir-of-frames-or-video> [more...] \
+    --source-fps 30 --fps 5 --replay 1,2,5 --dump ./alarms
+```
+
+`--dump` writes the triggering frames, which is how the five above were
+characterised; guessing at them from timestamps would have missed that two were
+a bed rather than a crouch. The harness is validated in both directions - a
+positive control (a fall held 5 s) confirms, a negative control (a standing
+person held 5 s) does not - because a harness that always reports zero looks
+exactly like good news.
 
 **A second result from the same run, worth as much as the first.** POLAR's
 tier-A `squat` agrees with this classifier **44.3%** of the time - the same
@@ -732,6 +833,16 @@ Also expected:
   That is a detection miss upstream of posture, and no geometry change reaches
   it. Kept as a second failing fixture precisely to keep it distinguishable from
   the view-axis case.
+- **A person lying on a bed or sofa raises a confirmed fall, and the tracker
+  cannot help.** Measured 2026-08-12 on 40 seconds of continuous bed footage:
+  confirms within 1.2-2.0 s at every frame rate and holds for the full duration.
+  `tracker.js`'s only mechanism is persistence, so it separates a fall from a
+  transient crouch and cannot separate one from any *sustained* horizontal
+  posture - persistence is what those two share. On the floor is a fall, on the
+  bed is not, and nothing in this system distinguishes them. This is the most
+  deployment-relevant gap in this list for a bedroom or care setting, and it
+  needs a signal geometry does not carry: a floor/furniture zone mask, a
+  ground-plane homography from a fixed camera, or the transition into the pose.
 - **Crouching people read as `fall` 434 times in 5,784.** Measured on POLAR,
   which contains no falls: 11.5% of ordinary people are called a fall on a
   single frame, 8.1% at a confidence the tracker would act on, and two-thirds of
@@ -885,17 +996,18 @@ improved most and leaves the two that did not:
   whole intent visible in two screenshots: not a degraded answer, a different
   one.
 
-- **The false-alarm path**, which remains the open one. Whether FALL CONFIRMED
-  appears on a genuine forward-leaning crouch, or whether `FALL_CONFIRM_MS` eats
-  it, is still unestablished - and remains the only claim in this document
-  resting on the tracker rather than on measurement. A crouch in full frame should read `fall` - that is
-  the 11.5% measured under "False-alarm rate" - and whether `tracker.js`'s 1.2s
-  sustain actually suppresses it before the FALL CONFIRMED badge appears is the
-  single most useful thing a next test could establish. It is the only claim in
-  this document resting on the tracker rather than on measurement.
+- **The false-alarm path was the open one, and has since been closed on video**
+  rather than on a device. See "Post-tracker false alarms, measured on video".
+  The answer split in two: `FALL_CONFIRM_MS` does absorb a forward-leaning
+  crouch - 138 fall-reading frames produced 0 confirmations at 1 and 2 fps - and
+  it does nothing at all for a sustained horizontal posture, with a man lying on
+  a bed confirming within 2 seconds at every rate. Repeating that on a device is
+  still worth doing, but it is now a corroboration rather than the missing
+  measurement.
 
-Still open: the perturbation matrix across browsers, the latency table above, and
-the post-tracker false-alarm rate.
+Still open: the perturbation matrix across browsers, and the latency table
+above. The post-tracker false-alarm rate is measured (on video, not on a
+device).
 
 ## A trained keypoint classifier was tried and is NOT shipped (2026-08-12)
 
