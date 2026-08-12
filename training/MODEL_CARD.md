@@ -589,6 +589,49 @@ What this measurement does **not** cover, unchanged from before: box
 localisation quality, multi-person scenes scored per-person rather than top-1,
 and any video/temporal behaviour (that is `npm run tracker`'s job).
 
+### False-alarm rate, measured for the first time (2026-08-12)
+
+Every accuracy figure in this document until now was measured on people who had
+fallen. The 2023 corpus is entirely accident scenes, so there was no population
+of confirmed *non*-fallen people to count false alarms against - the one number
+that decides whether an anomaly detector is usable in a room where nothing is
+wrong.
+
+The POLAR posture dataset supplies it. Staged via
+`build-corpus.py --dataset polar` into `corpus-polar/`, it holds 5,784 matched
+people across `sit` / `squat` / `stand` and **contains no falls at all**, so
+every `fall` this system emits on it is wrong by construction.
+
+| | |
+| --- | --- |
+| people | 5,784 |
+| called `fall` | **666 = 11.5%** |
+| above `FALL_ENTER_CONF` 0.55, which the tracker acts on | **470 = 8.1%** |
+
+By true posture: **434 squatting**, 224 sitting, 8 standing. By tier: 601 tier A,
+65 tier B.
+
+**Crouching is two-thirds of it**, which is the predicted result rather than a
+surprise: `KNEEL_SHIN_FORESHORTEN` deliberately emits `fall` for kneeling, and
+the note under "Known failure modes" already called that the acknowledged
+weakest link. It now has a number instead of an acknowledgement.
+
+**Read it as a stills figure, not a deployment figure.** `tracker.js` requires
+`FALL_CONFIRM_MS` 1,200 ms of sustained fall before confirming, so a crouch that
+flickers to `fall` for one frame raises nothing. What 8.1% bounds is how often a
+single frame of an ordinary person is actionable - the rate the tracker has to
+suppress, not the rate a user sees. Measuring the post-tracker rate needs video
+of people not falling, which this project still does not have.
+
+**A second result from the same run, worth as much as the first.** POLAR's
+tier-A `squat` agrees with this classifier **44.3%** of the time - the same
+44.3% measured independently against the 2023 corpus. Two unrelated datasets,
+labelled by different people for different purposes, producing the same recall
+is strong evidence that the number is a property of the classifier rather than
+of either label set. It also clears POLAR's labels: `stand` agrees **98.7%**, so
+the two vocabularies do match and the disagreement on `squat` is this system's,
+not POLAR's.
+
 ## Previous model (superseded 2026-08-08)
 
 Kept because the comparison above depends on it, and because the deployed file
@@ -683,6 +726,13 @@ Also expected:
   That is a detection miss upstream of posture, and no geometry change reaches
   it. Kept as a second failing fixture precisely to keep it distinguishable from
   the view-axis case.
+- **Crouching people read as `fall` 434 times in 5,784.** Measured on POLAR,
+  which contains no falls: 11.5% of ordinary people are called a fall on a
+  single frame, 8.1% at a confidence the tracker would act on, and two-thirds of
+  those are squatting. This is the deliberate `KNEEL_SHIN_FORESHORTEN` trade
+  quantified - see "False-alarm rate" above. The 1.2s sustain in `tracker.js` is
+  the only thing standing between that rate and a user-visible false alarm,
+  which makes it load-bearing rather than cosmetic.
 - **The kneeling gate is no longer what holds `court-fall-overhead.jpg`.** It
   used to recover that fixture on the clean image only, with the fixture still
   flipping to `sit` under hflip, grayscale and downscale-320. Since the inverted
