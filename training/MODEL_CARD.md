@@ -275,11 +275,17 @@ reader would assume, because the set could not yet fail.
 
 | | clean | perturbed |
 | --- | --- | --- |
-| accuracy | **16/19 (84.2%)** | **98/114 (86.0%)** |
-| macro-F1 | 0.838 | 0.859 |
+| accuracy | **17/19 (89.5%)** | **102/114 (89.5%)** |
+| macro-F1 | 0.901 | 0.901 |
 
-Per-class under perturbation: `fall` P=1.000 R=0.750, `sit` P=1.000 R=1.000,
-`stand` P=0.750 R=1.000, `squat` P=0.769 R=0.833.
+**Updated 2026-08-12 (second time that day) by the squat probe**, from 16/19
+(84.2%) / 0.838 clean and 98/114 (86.0%) / 0.859 perturbed. Exactly one fixture
+moved - `squat-ceiling-gap.jpg`, verified by disabling the probe and re-running.
+See "The squat probe" below for what it is and why it is the only learned
+component here.
+
+Per-class under perturbation, before the probe: `fall` P=1.000 R=0.750, `sit`
+P=1.000 R=1.000, `stand` P=0.750 R=1.000, `squat` P=0.769 R=0.833.
 
 `squat`'s R=0.833 is the most misleading figure in this table: measured against
 the corpus its true recall is **44.3%** and its precision on labelled rows is
@@ -1142,6 +1148,142 @@ Measurement runs no longer overwrite `posture_keypoints.onnx` - that needs
 since the label encoder's order is not `CLASS_NAMES`' and a consumer that
 guesses it silently swaps two postures.
 
+## The squat probe — the one learned component that DOES ship (2026-08-12)
+
+The measurement above split the rejected classifier cleanly in two: `squat`
+transferred across domains, `fall` collapsed. This is the half that transferred,
+shipped at the narrowest scope that was measured to work.
+
+`training/train_squat_probe.py` trains **one binary probe, squat vs not-squat**,
+on POLAR tier A. `posture.js` consults it in exactly one situation: the
+geometric gates have already decided `sit`, at tier A, on a body whose feet are
+under it. It can turn that `sit` into a `squat` and it can do nothing else.
+
+### Why this is safe when the full replacement was not
+
+Three invariants, and they are **structural** - they follow from where the call
+sits in `classifyPosture`, not from the model behaving well:
+
+1. **It cannot cost an alarm.** The fall gates are steps 1-3 and return before
+   it. Every row it sees is one they already declined, so no `fall` can be
+   suppressed - not by a bad threshold, not by a domain it has never seen.
+2. **It cannot touch `stand`.** Stand precision falling 0.876 -> 0.744 is the
+   criterion the full replacement failed. The probe never runs on a `stand`.
+3. **Its worst case is a relabel between two non-alarming classes**, `sit` and
+   `squat`.
+
+`npm run posture` asserts 1 and 2 on synthetic skeletons; the training script
+asserts them over the whole corpus and exits non-zero if either breaks.
+
+### It relaxes the gate's ceiling; it does not replace the gate
+
+`stanceOffset` stays a hard precondition at the gate's own `SQUAT_STANCE_OFFSET`
+of 0.5. Feet projected forward of the hips is the signature separating a
+chair-sit from a crouch, and the probe does not reliably learn it from raw
+joints - `posture-check.mjs` caught the unguarded version calling a canonical
+chair-sit (`stanceOffset` 0.88, knees level with hips) a squat at 0.57. The
+guard costs 2 of 12 recovered squats and improves the exchange rate from 3.00:1
+to 3.33:1, which is a good trade for keeping the class geometrically defined.
+
+So the model decides *how far inside* the squat envelope to reach. The geometry
+still decides what the envelope is.
+
+### Measured
+
+Trained on POLAR tier A. Threshold chosen on a held-out POLAR image split by a
+rule fixed before any cross-domain number was looked at, then evaluated on
+`corpus-2023`, a domain it saw in neither training nor selection:
+
+| | gates | + probe |
+| --- | --- | --- |
+| `squat` recall | 0.427 | **0.518** |
+| `sit` recall | 0.542 | 0.492 |
+| `stand` recall | 0.932 | 0.932 (identical) |
+| `fall` recall | 0.712 | 0.712 (identical) |
+
+10 genuine squats recovered against 3 correct `sit` calls broken - **3.33:1**,
+holding at 3.54:1 on the held-out POLAR split. Compare the alternative of simply
+widening `SQUAT_HIP_ANKLE_DROP`, measured earlier in this document at 4 gained
+per 7 broken: a losing trade. That difference is the whole justification.
+
+**The threshold rule is worth stating, because getting it wrong is easy.** Raw
+precision is the wrong objective here. Each firing falls into one of three
+buckets by ground truth: `squat` is a GAIN, `sit` is a COST, and `fall`/`stand`
+are NEUTRAL - the gates were already wrong and both labels are non-alarming, so
+the relabel changes nothing that reaches a user. `1 - precision` counts that
+neutral bucket as damage, and on corpus-2023 it is 71% of the branch. A first
+draft optimised precision, picked 0.90, and shipped a probe that fired 13 times
+and recovered 4 squats. The rule is now `maximise GAIN - 2 x COST`, which picks
+0.55.
+
+### On the fixtures — the third domain, which is what rejected the full model
+
+| | before | after |
+| --- | --- | --- |
+| clean | 16/19 (84.2%), macro-F1 0.838 | **17/19 (89.5%), macro-F1 0.901** |
+| perturbed | 98/114 (86.0%), macro-F1 0.859 | **102/114 (89.5%), macro-F1 0.901** |
+
+Every `expectedAll` and `consistentWith` check still passes. In particular
+`lodge-group-a`/`b` both stay `sit` and stay consistent with each other - that
+pair is where the full replacement produced its confident `fall` 0.80 on a
+seated woman, and the probe cannot reproduce it by construction.
+
+The single fixture that flipped is **`squat-ceiling-gap.jpg`**, verified by
+disabling the probe and re-running: it is the only one that changes. That
+fixture was this set's longest-standing KNOWN GAP, a real deep squat missing the
+`SQUAT_HIP_ANKLE_DROP` ceiling by 0.05, kept failing specifically to argue
+against raising the ceiling by hand. It now passes 6/6 without that trade being
+paid. It is the probe's regression guard: if it returns to `sit`, the probe has
+stopped working.
+
+`bus-fall-obscured.jpg` and `prone-fall-view-axis.jpg` still fail, unchanged and
+for their original reasons - a detection miss and a 2D-geometry limit
+respectively. Neither is a posture problem and neither is touched by this.
+
+### Shipping shape
+
+Generated as **plain JavaScript**, not ONNX: ~1,500 nodes as flat arrays, which
+is smaller than a second `InferenceSession`'s own overhead and - the reason that
+decided it - keeps `classifyPosture` **synchronous and pure**. An async posture
+call would ripple through `inference.js`, `detector.worker.js` and every check
+script to buy nothing. It ships twice, CJS beside `inference.js` and ESM under
+`frontend-new/src/lib/detect/`, mirrored the same way `posture.js` already is.
+
+> **The feature encoding is the trap in this component.** Training rows carry the
+> **wire** form of a detection: `keypointsForWire()` nulls any joint below
+> `KP_CONF_THRESHOLD` and rounds survivors to whole pixels, the box is rounded,
+> and `featurise()` then writes a nulled joint as `(0, 0, 0)` - confidence
+> included, so `c == 0` is the "joint absent" marker. Inside `posture.js`
+> keypoints are full precision and never nulled. A feature builder that reads
+> them directly would feed the model coordinates for occluded joints where every
+> training row had zeros, and it would not throw - it would just classify worse.
+> `featurise()` also returns **float32**, so a Float64Array on the JS side puts
+> values ~1e-7 from the ones the trees were fitted against, which is a different
+> answer for anything sitting on a split threshold.
+>
+> `npm run squat-probe` (in `npm run check`) walks 300 real corpus-2023 rows
+> through the shipped JS and asserts both the 52 features and the probability
+> match sklearn - worst observed difference 5e-10 and 5e-13. Features and
+> probability are compared separately so a failure says which half drifted. It
+> caught both traps above during development rather than after.
+
+Regenerate everything - model, both JS copies and the check's reference
+fixtures - with:
+
+```
+.venv/bin/python training/train_squat_probe.py
+```
+
+### What this does not do
+
+It does not improve `fall` recall, `stand`, or the 11.5% single-frame
+false-alarm rate. Those are the geometric gates' business and this changes none
+of them, by design. `squat` recall is still 0.518 against a POLAR-measured
+ceiling of ~0.81 for an unconstrained model - the guard and the sit-only trigger
+are what buy the safety, and they cost reach. The remaining misses are the 21 of
+110 tier-A squats the fall gates claim first and the 19 the gates call `stand`,
+neither of which this is allowed to touch.
+
 ## If accuracy needs to improve
 
 In order of expected value per unit of effort:
@@ -1162,19 +1304,17 @@ In order of expected value per unit of effort:
    where the remaining error is.
 4. **Solve tier C properly** if desk framing matters. Geometry alone cannot;
    it needs the transition into the pose (temporal) or scene context.
-5. **A trained keypoint classifier for `squat` alone**, consulted at tier A when
-   the gates answer `sit`. This replaces the flat "not a trained classifier"
-   entry that stood here, because the cross-domain measurement split the
-   question in two: `squat` transfers (recall 0.809 trained on POLAR, tested on
-   a corpus it has never seen, against the gates' 0.427), while the model's
-   `fall` output collapses out of domain to a 61% false-alarm rate against the
-   gates' 11.5%. A squat-only second opinion takes the half that works and
-   touches neither the fall path nor `stand`, the two things the full
-   replacement broke. See "Cross-domain transfer, measured".
+5. **DONE - the squat probe ships.** This entry used to read "not a trained
+   keypoint classifier". The cross-domain measurement split that question in
+   two: `squat` transfers, `fall` collapses. A squat-only second opinion took
+   the half that works, and it is live - fixtures 16/19 -> 17/19, squat recall
+   0.427 -> 0.518 cross-domain, `fall` and `stand` bit-identical. See "The squat
+   probe" above.
 
    **Still not a full replacement.** That was tried on 2026-08-12, lost on the
    held-out fixtures, and then lost again on the cross-domain arms against a
-   pre-registered bar.
+   pre-registered bar. Do not revisit it without training data from domains
+   neither corpus covers - domestic interiors first.
 6. **Only then consider yolov8s-pose.** Roughly doubles inference cost, which
    the 512 MB host cannot absorb — though it matters much less now that the
    browser can carry the live path. Keypoint localisation is *mostly* not the

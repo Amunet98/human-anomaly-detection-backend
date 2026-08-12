@@ -29,6 +29,7 @@
 
 // Mirrors KP_CONF_THRESHOLD in the browser's constants.js.
 const KP_CONF_THRESHOLD = 0.65;
+const { SQUAT_PROBE_THRESHOLD, probeFeatures, squatProbability } = require('./squat-probe.js');
 
 // --- tuning ---------------------------------------------------------------
 
@@ -222,6 +223,68 @@ function margin(value, boundary, range) {
   return Math.max(0.6, Math.min(1, 0.6 + (0.4 * Math.abs(value - boundary)) / range));
 }
 
+// --- the squat second opinion ---------------------------------------------
+//
+// Consulted at exactly two points below, both of which were about to return
+// `sit` at tier A. It is the one learned component in this file, and its scope
+// is deliberately the narrowest thing that was measured to work.
+//
+// The full four-class classifier this is carved out of was rejected on
+// 2026-08-12: `squat` transferred across domains (recall 0.809 against these
+// gates' 0.427) but `fall` collapsed, the model calling 61% of POLAR's
+// non-fallen people a fall where the gates call 11.5%. Taking only the squat
+// half, and only where the gates have already declined to raise an alarm, keeps
+// the result that held and discards the one that did not.
+//
+// Three invariants, and they are structural rather than promised - they follow
+// from *where* this is called, so no threshold or model change can break them:
+//
+//   1. It never runs on a row the fall gates claimed. Those return above. So it
+//      cannot suppress an alarm.
+//   2. It never runs on a row that would answer `stand`. Stand precision was
+//      the criterion the full replacement failed.
+//   3. Its only possible output is `squat` in place of `sit` - two non-alarming
+//      classes. Its worst case is a cosmetic relabel.
+//
+// Measured on corpus-2023, a domain it never saw in training or in threshold
+// selection: squat recall 0.427 -> 0.536, sit recall 0.542 -> 0.475, `fall` and
+// `stand` bit-identical. 12 genuine squats recovered against 4 correct `sit`
+// calls broken, an exchange rate of 3:1 that held at 3.5:1 on the held-out
+// POLAR split. Compare the alternative of simply widening SQUAT_HIP_ANKLE_DROP,
+// measured in MODEL_CARD.md at 4 gained per 7 broken - a losing trade.
+//
+// It relaxes the squat gate's CEILING; it does not replace the gate's
+// definition. `stanceOffset` stays a hard precondition at the same
+// SQUAT_STANCE_OFFSET the gate uses, so the probe can only ever fire on a body
+// whose feet are under it. That is not caution for its own sake - it was found
+// by posture-check.mjs, which caught the unguarded probe calling a canonical
+// chair-sit (knees level with the hips, feet projected 0.88 torso-lengths
+// forward) a squat at 0.57. Feet forward of the hips is the one signature that
+// separates a chair-sit from a crouch, the gate already encodes it, and the
+// probe does not reliably learn it from raw joints.
+//
+// Measured cost of the guard on corpus-2023: 12 recovered squats become 10, and
+// the exchange rate improves from 3.00:1 to 3.33:1. So it is cheap, and it buys
+// back the property that the geometry defines the class while the model only
+// decides how far inside it to reach.
+//
+// Requiring stanceOffset to be non-null also enforces tier A structurally - the
+// feature needs the ankle - rather than by the caller remembering to.
+//
+// Returns a squat result, or null to leave the caller's `sit` alone.
+function squatSecondOpinion(keypoints, box, f, personConf, leanPenalty) {
+  if (f.stanceOffset === null || f.stanceOffset >= SQUAT_STANCE_OFFSET) return null;
+  const p = squatProbability(probeFeatures(keypoints, box, KP_CONF_THRESHOLD));
+  if (p < SQUAT_PROBE_THRESHOLD) return null;
+  return {
+    className: 'squat',
+    confidence:
+      personConf * TIER_FULL * leanPenalty * margin(p, SQUAT_PROBE_THRESHOLD, 1 - SQUAT_PROBE_THRESHOLD),
+    tier: 'A',
+    reason: `squat probe ${p.toFixed(2)} (geometry said sit)`,
+  };
+}
+
 // --- feature extraction ---------------------------------------------------
 
 function postureFeatures(keypoints, box) {
@@ -406,6 +469,11 @@ function classifyPosture(keypoints, box, personConf) {
   // a vote it would lose 2-1 to kneeDrop and kneeAngle in exactly the case it
   // exists to catch, since those two are what fail there.
   if (f.thighShinRatio !== null && f.thighShinRatio < SIT_THIGH_FORESHORTEN) {
+    // A deep crouch foreshortens the thigh too, which is why the squat gate runs
+    // ahead of this one. What reaches here is what that gate's thresholds
+    // declined, and it is the larger of the two places the probe earns its keep.
+    const probe = squatSecondOpinion(keypoints, box, f, personConf, leanPenalty);
+    if (probe) return probe;
     return {
       className: 'sit',
       confidence:
@@ -444,6 +512,12 @@ function classifyPosture(keypoints, box, personConf) {
   // fall recall. kneeDrop stays.
   const angleSaysSit = f.kneeAngle < STAND_KNEE_ANGLE;
   const agree = dropSaysSit === angleSaysSit;
+  // Only on the `sit` side. A `stand` answer here is never second-guessed -
+  // see invariant 2 on squatSecondOpinion.
+  if (dropSaysSit) {
+    const probe = squatSecondOpinion(keypoints, box, f, personConf, leanPenalty);
+    if (probe) return probe;
+  }
   return {
     className: dropSaysSit ? 'sit' : 'stand',
     confidence:
