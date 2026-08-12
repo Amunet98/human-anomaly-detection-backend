@@ -788,11 +788,22 @@ not from a timing harness - two glances at a live readout. It is enough to
 establish the order of magnitude (~1 s per frame, roughly 3x the desktop
 figure) and not enough to quote as a benchmark.
 
-**It reports `wasm`, not `webgpu`, and that is correct behaviour.** Checked via
-`chrome://gpu` on the device (Chrome 151, Android 16): **WebGPU: Disabled**, and
-directly above it **Vulkan: Disabled**. Chrome's WebGPU on Android is built on
-Vulkan through Dawn, so with Vulkan off WebGPU cannot initialise and `session.js`
-is right to fall back. Nothing to fix.
+**It reports `wasm`, not `webgpu`, and that is correct behaviour.** Diagnosed via
+`chrome://gpu` on the device (Nothing Phone 3, Adreno, Chrome 151, Android 16).
+The first reading was wrong and is worth recording as such: `Vulkan: Disabled`
+looked like the cause, but enabling `#enable-vulkan` left WebGPU disabled, which
+disproved it.
+
+The actual entry under "Problems Detected" is:
+
+    Disable webgpu on vk via gl interop: crbug 442791440, 475935650
+    Disabled Features: webgpu_on_vk_via_gl_interop
+
+Chrome's compositor on this device runs on **GL** - `use_virtualized_gl_contexts`
+appears in the applied workarounds - while WebGPU renders through **Vulkan**. The
+hand-off between them is the "vk via gl interop" path, and Chrome blocklists it
+on this hardware. Vulkan was never the blocker; the bridge out of it is. Nothing
+in `session.js` is involved and nothing needs fixing.
 
 The consequence is worth stating plainly: **WASM is the mobile deployment
 reality, not a degraded path.** Visitors will not toggle `chrome://flags`, so
