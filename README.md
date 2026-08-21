@@ -23,7 +23,7 @@ in [`training/MODEL_CARD.md`](training/MODEL_CARD.md). Read it before quoting
 any accuracy figure for this system.
 
 The short version, measured 2026-08-12 via the frontend's `npm run eval:robust`:
-**84.2% clean (16/19), 86.0% perturbed (98/114)**, macro-F1 0.838 / 0.859 over
+**89.5% clean (17/19), 89.5% perturbed (102/114)**, macro-F1 0.901 / 0.901 over
 all four classes, with
 `posture.js`'s thresholds calibrated over 3,106 detections from 4,924
 deduplicated images. Note `best.onnx` is **COCO-pretrained yolov8n-pose,
@@ -39,7 +39,7 @@ indoor room) rather than body configuration. More data would not have fixed a
 shortcut that the task framing itself made available. See
 [`training/MODEL_CARD.md`](training/MODEL_CARD.md) for the full comparison.
 
-**That 86.0% is not a deployment accuracy.** The fixture set was selected for
+**That 89.5% is not a deployment accuracy.** The fixture set was selected for
 cases the classifier was expected to get wrong, so it is adversarial rather
 than representative; reading it as a field figure would be wrong in both
 directions. The model card spells out why.
